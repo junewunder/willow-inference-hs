@@ -1,0 +1,11 @@
+# Stack configuration. See https://docs.haskellstack.org/en/stable/yaml_configuration/
+#
+# The snapshot pins the GHC version and the versions of every dependency, so
+# `stack build` fetches a fixed toolchain rather than whatever is newest.
+# stack.yaml.lock records the resolved hashes; keep both under version control.
+
+resolver:
+  url: https://raw.githubusercontent.com/commercialhaskell/stackage-snapshots/master/lts/24/39.yaml
+
+packages:
+- .

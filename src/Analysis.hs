@@ -1,0 +1,23 @@
+module Analysis
+  ( fullEffectVar
+  , fullEffect
+  , effectSummary
+  , relevantEffect
+  , InitialRenderInfo(..)
+  , analyzeComponentInitialRender
+  , describeSettleTime
+  , simplifyEffect
+  , HandlerKind(..)
+  , StaleHandler(..)
+  , CleanupReport(..)
+  , cleanupReport
+  , handlersCleanedUp
+  , checkComponentCleanup
+  , describeHandler
+  , describeStaleHandler
+  ) where
+
+import Analysis.InitialRender
+import Analysis.Common
+import Analysis.EffectReadability
+import Analysis.HandlerCleanup

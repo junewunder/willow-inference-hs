@@ -1,0 +1,25 @@
+comp Debounce (value: int) : int {
+  state slow, setSlow default value;
+  on value do {
+    clearTimeout();
+    setTimeout((u: unit) => {
+      setSlow((v: int) => {value})
+    })
+  };
+  return slow;
+}
+
+/*
+
+The paper's (§2) Debounce encoding, on the event layer. Target cascade of value:
+
+  cancel timeout<> * remove timeout<>
+    * eventually timeout<> {after 1r {@slow}}
+    * after 100ms {timeout<>}
+
+(paper glyphs: ⊘timeout⟨⟩ * ✗timeout⟨⟩ * ◇timeout⟨⟩(○¹ʳ @slow) * ○¹⁰⁰ᵐˢ timeout⟨⟩)
+
+Reading: when value changes, any pending timeout<> is cancelled and its
+handlers removed; a fresh timeout<> is scheduled 100ms out; contingent on it
+firing, slow may change next render.
+*/

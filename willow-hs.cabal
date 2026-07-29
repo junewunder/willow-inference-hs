@@ -1,0 +1,137 @@
+cabal-version: 1.12
+
+-- This file has been generated from package.yaml by hpack version 0.38.1.
+--
+-- see: https://github.com/sol/hpack
+
+name:           willow-hs
+version:        0.1.0.0
+synopsis:       A type-and-effect checker for React-style timing bugs
+description:    Please see the README on GitHub at <https://github.com/junewunder/willow-hs#readme>
+category:       Language
+homepage:       https://github.com/junewunder/willow-hs#readme
+bug-reports:    https://github.com/junewunder/willow-hs/issues
+author:         june wunder
+maintainer:     june wunder
+copyright:      2025 june wunder
+license:        MIT
+license-file:   LICENSE
+build-type:     Simple
+extra-source-files:
+    README.md
+
+source-repository head
+  type: git
+  location: https://github.com/junewunder/willow-hs
+
+library
+  exposed-modules:
+      Analysis
+      Analysis.Common
+      Analysis.EffectReadability
+      Analysis.HandlerCleanup
+      Analysis.InitialRender
+      Builtins
+      ErrorDisplay
+      Import
+      InferenceMonad
+      InferTyEffect
+      Parse
+      Run
+      Types
+      Util
+  other-modules:
+      Paths_willow_hs
+  hs-source-dirs:
+      src
+  default-extensions:
+      MultiParamTypeClasses, FlexibleInstances, GeneralizedNewtypeDeriving, NoImplicitPrelude, GADTs, KindSignatures, DataKinds, OverloadedStrings, NamedFieldPuns, LambdaCase, DeriveFunctor, TypeFamilies
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -Wunused-imports -Wno-unused-imports
+  build-depends:
+      base >=4.11 && <10
+    , bytestring
+    , directory
+    , filepath
+    , free >=5.2
+    , megaparsec >=9.7.0
+    , ordered-containers
+    , parser-combinators >=1.3.1
+    , prettyprinter >=1.7.2
+    , process
+    , recursion-schemes >=5.2.2
+    , rio >=0.1.24.0
+    , template-haskell >=2.15.0.0
+    , text
+    , transformers
+  default-language: Haskell2010
+
+executable willow-hs-exe
+  main-is: Main.hs
+  other-modules:
+      Paths_willow_hs
+  hs-source-dirs:
+      app
+  default-extensions:
+      MultiParamTypeClasses, FlexibleInstances, GeneralizedNewtypeDeriving, NoImplicitPrelude, GADTs, KindSignatures, DataKinds, OverloadedStrings, NamedFieldPuns, LambdaCase, DeriveFunctor, TypeFamilies
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -Wunused-imports -Wno-unused-imports -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      base >=4.11 && <10
+    , bytestring
+    , directory
+    , filepath
+    , free >=5.2
+    , megaparsec >=9.7.0
+    , optparse-simple
+    , ordered-containers
+    , parser-combinators >=1.3.1
+    , prettyprinter >=1.7.2
+    , process
+    , recursion-schemes >=5.2.2
+    , rio >=0.1.24.0
+    , template-haskell >=2.15.0.0
+    , text
+    , transformers
+    , willow-hs
+  default-language: Haskell2010
+
+test-suite willow-hs-test
+  type: exitcode-stdio-1.0
+  main-is: Spec.hs
+  other-modules:
+      EffectPrettySpec
+      FunctionEffectSpec
+      HandlerCleanupSpec
+      InferAnnotatedSpec
+      InitialRenderSpec
+      PaperExamplesSpec
+      PaperHarness
+      PaperRulesSpec
+      ParseSpec
+      RunAnnotatedSpec
+      UtilSpec
+      Paths_willow_hs
+  hs-source-dirs:
+      test
+  default-extensions:
+      MultiParamTypeClasses, FlexibleInstances, GeneralizedNewtypeDeriving, NoImplicitPrelude, GADTs, KindSignatures, DataKinds, OverloadedStrings, NamedFieldPuns, LambdaCase, DeriveFunctor, TypeFamilies
+      MultiParamTypeClasses, FlexibleInstances, GeneralizedNewtypeDeriving, NoImplicitPrelude, GADTs, KindSignatures, DataKinds, OverloadedStrings, NamedFieldPuns, LambdaCase, DeriveFunctor, TypeFamilies
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -Wunused-imports -Wno-unused-imports -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      base >=4.11 && <10
+    , bytestring
+    , directory
+    , filepath
+    , free >=5.2
+    , hspec
+    , megaparsec >=9.7.0
+    , ordered-containers
+    , parser-combinators >=1.3.1
+    , prettyprinter >=1.7.1
+    , process
+    , recursion-schemes >=5.2.2
+    , rio >=0.1.24.0
+    , template-haskell >=2.15.0.0
+    , text
+    , transformers
+    , willow-hs
+  default-language: Haskell2010

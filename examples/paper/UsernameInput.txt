@@ -1,0 +1,192 @@
+event change<#name> : string;
+
+comp Debounce (value: string) : string {
+  state slow, setSlow default value;
+  on value do {
+    clearTimeout();
+    setTimeout((uu: unit) => {
+      setSlow((v: string) => {value})
+    })
+  };
+  return slow;
+}
+
+comp UsernameInput (clk: int) : (bool * html) {
+  state username, setUsername default "";
+  state availableNames, setAvailableNames default "";
+  state status, setStatus default "idle";
+  comp slowUsername = Debounce(username);
+  let handleUsernameSuc = (p: (string * bool)) => {
+    p.1 ? setAvailableNames((s: string) => { s ++ p.0 }) : ()
+  };
+  let handleUsernameErr = (e: string) => {
+    setStatus((s: string) => { "error" })
+  };
+  on slowUsername do {
+    (has(availableNames, slowUsername))
+      ? setStatus((s: string) => { "idle" })
+      : (
+        setStatus((s: string) => { "checking" }) ;;
+        fetchUsernameCheck(slowUsername, handleUsernameSuc, handleUsernameErr)
+      )
+  };
+  on clk do {
+    remove change<#name>;
+    bind change<#name> ((v: string) => setUsername((s: string) => v));
+  };
+  let availableIndicator = (status === "available")
+      ? <div>username available</div>
+      : <div>username not available</div>;
+  let checkingIndicator = (status === "checking")
+      ? <div>loading...</div>
+      : <div></div>;
+  let errorIndicator = (status === "error")
+      ? (<div>error, try again </div>)
+      : (<div></div>);
+  return (has(availableNames, username), <div>
+    <input type="text"
+      id="name"
+      value={username}
+    ></input>
+    {availableIndicator}
+    {checkingIndicator}
+    {errorIndicator}
+  </div>);
+}
+
+comp UsernameInputFixed (clk: int) : (bool * html) {
+  state username, setUsername default "";
+  state availableNames, setAvailableNames default "";
+  state status, setStatus default "idle";
+  comp slowUsername = Debounce(username);
+  let handleUsernameSuc = (p: (string * bool)) => {
+    setStatus((s: string) => { "idle" }) ;;
+    (p.1 ? setAvailableNames((s: string) => { s ++ p.0 }) : ())
+  };
+  let handleUsernameErr = (e: string) => {
+    setStatus((s: string) => { "error" })
+  };
+  on slowUsername, status do {
+    ((has(availableNames, slowUsername)) || (status === "checking"))
+      ? ()
+      : (
+        setStatus((s: string) => { "checking" }) ;;
+        fetchUsernameCheck(slowUsername, handleUsernameSuc, handleUsernameErr)
+      )
+  };
+  on clk do {
+    remove change<#name>;
+    bind change<#name> ((v: string) => setUsername((s: string) => v));
+  };
+  let availableIndicator = (status === "available")
+    ? <div>username available</div>
+    : <div>username not available</div>;
+  let checkingIndicator = (status === "checking")
+    ? <div>loading...</div>
+    : <div></div>;
+  let errorIndicator = (status === "error")
+    ? (<div>error, try again </div>)
+    : (<div></div>);
+  return (has(availableNames, username), <div>
+    <input type="text"
+      id="name"
+      value={username}
+    ></input>
+    {availableIndicator}
+    {checkingIndicator}
+    {errorIndicator}
+  </div>);
+}
+
+/*
+
+The paper's (§7) signup-form case study: a username field that checks
+availability over the network as the user types. Three components:
+
+  Debounce            the §2 debounce, reused unchanged
+  UsernameInput       the paper's §7 listing, with both of its bugs present
+  UsernameInputFixed  the same program with both fixes applied
+
+Adaptations from the paper source:
+  - availableNames is a STRING, not a Set: the `has` builtin
+    ((string * string) -> bool) stands in for Set membership and `++`
+    stands in for Set add.
+  - The paper's html wires the listener with a JSX attribute,
+    <input id="name" onChange={\e. setUsername(\_. e.target.value)}/>.
+    Willow has no effectful JSX attributes, so the listener is bound by id
+    in a mount-time `on clk do { ... }` block — an on-block body is the only
+    place an effect may live — and the clk argument exists to host it.
+  - Willow has no field access, so e.target.value becomes the event payload
+    itself (event change<#name> : string;).
+  - fetchUsernameCheck is shaped like §5's asyncCompute, with events
+    req<check,suc> / req<check,err> and its callbacks passed in a tuple.
+  - The ternary conditions are parenthesized — `(has(...)) ? ... : ...` —
+    because application binds LOOSER than `? :` here, so the bare form would
+    parse as `has` applied to the whole conditional.
+  - `;;` is the sequencing builtin (both sides unit).
+  - §7 writes Debounce's internal timer label db<>; that is a figure-local
+    renaming of timeout<>, the label the setTimeout builtin uses.
+
+Inferred cascades for UsernameInput (asserted in test/PaperExamplesSpec.hs):
+
+  clk      | remove change<#name>
+             * always change<#name> {after 1r {@username}}
+  username | @slowUsername.value
+  slowUsername.value |
+        cancel timeout<> * remove timeout<>
+      * eventually timeout<> {after 1r {@slowUsername.slow}}
+      * after 100ms {timeout<>}
+  slowUsername |
+        after 1r {@status}                                   -- then: "idle"
+      + ( after 1r {@status}                                 -- else: "checking"
+        * after 1n {req<check,suc> + req<check,err>}
+        * eventually req<check,suc> {
+            (after 1r {@availableNames} + none) * remove req<check,err>
+          }
+        * eventually req<check,err> {
+            after 1r {@status} * remove req<check,suc>
+          } )
+  status   | none
+
+Reading the chain: typing fires change<#name>, which sets @username; username
+is handed to the Debounce subcomponent as @slowUsername.value, whose body is
+the §2 debounce; 100ms later slowUsername settles and the network block runs.
+
+The two bugs the paper finds, both visible in slowUsername above:
+
+  Bug 1 (stuck loading). Every path updates @status except the success one:
+  the ◇req<check,suc> body is (○¹ʳ @availableNames + ·) * ✗req<check,err>, so
+  it records the name and tears down the error listener but never clears
+  "checking" — the spinner keeps spinning while telling the user the name is
+  available. Fixed by resetting status in handleUsernameSuc.
+
+  Bug 2 (request race). The block watches only slowUsername, so a second
+  request can start while the first is in flight and both write the same
+  @status. Willow shows this as `status | none` — nothing watches status, so
+  no edge constrains the overlap. Fixed by watching status too and bailing
+  when a request is already running (`|| status === "checking"`).
+
+UsernameInputFixed applies both. Its slowUsername cascade differs in exactly
+two places — the then-branch is now `none` (the guard bails instead of
+re-setting status), and the ◇req<check,suc> body leads with ○¹ʳ @status:
+
+  slowUsername |
+        none
+      + ( after 1r {@status}
+        * after 1n {req<check,suc> + req<check,err>}
+        * eventually req<check,suc> {
+              (after 1r {@status} * (after 1r {@availableNames} + none))
+            * remove req<check,err>
+          }
+        * eventually req<check,err> {
+            after 1r {@status} * remove req<check,suc>
+          } )
+
+The third thing Willow reports is a loop, and it only appears once bug 2 is
+fixed: with status watched, expanding status through the effect graph reaches
+status again, so the full effect shows loop[status] on BOTH the suc and the
+err path (the paper's p.23 graph). That cycle is the error-retry path — a
+failed check sets "error", which re-runs the block and tries again — so it is
+intentional. Willow surfaces it for a human to judge rather than rejecting it,
+which is the point §7 is making: loop detection reports, it does not decide.
+*/

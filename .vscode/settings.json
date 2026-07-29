@@ -1,0 +1,9 @@
+{
+  "cSpell.ignorePaths": [
+    "examples/**/*.txt"
+  ],
+  "harper.excludePatterns": [
+    "**/examples/**/*.txt",
+    "**/test/**/*.hs"
+  ]
+}

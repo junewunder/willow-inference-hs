@@ -1,0 +1,86 @@
+event click<#doc> : (int * int);
+
+comp StaleListener (clk: int) : html {
+  state position, setPosition default (0, 0);
+  state visible, setVisible default true;
+  on clk do {
+    bind click<#doc> ((e: (int * int)) => {
+      setPosition((p: (int * int)) => { e })
+    });
+    setTimeout((u: unit) => {
+      setVisible((v: bool) => { false })
+    })
+  };
+  return <div
+    transformX={position.0}
+    transformY={position.1}
+    visible={visible}
+  />;
+}
+
+comp StaleListenerFixed (clk: int) : html {
+  state position, setPosition default (0, 0);
+  state visible, setVisible default true;
+  on clk do {
+    remove click<#doc>;
+    bind click<#doc> ((e: (int * int)) => {
+      setPosition((p: (int * int)) => { e })
+    });
+    clearTimeout();
+    setTimeout((u: unit) => {
+      setVisible((v: bool) => { false })
+    })
+  };
+  return <div
+    transformX={position.0}
+    transformY={position.1}
+    visible={visible}
+  />;
+}
+
+/*
+
+A negative example for §5.4's "event handlers cleaned up" analysis — run it
+with --cleanup:
+
+  stack exec -- willow-hs-exe --cleanup examples/StaleListener.txt
+
+Both components type-check: leaving a handler behind is a lint, not a type
+error, so the check is a walk over the inferred effect rather than a rule.
+
+StaleListener's clk block registers two handlers and removes neither:
+
+  clk | always click<#doc> {after 1r {@position * @returnVar}}
+          * eventually timeout<> {after 1r {@visible * @returnVar}}
+          * after 100ms {timeout<>}
+
+(paper glyphs: □click⟨#doc⟩(○¹ʳ @position) * ◇timeout⟨⟩(○¹ʳ @visible)
+                 * ○¹⁰⁰ᵐˢ timeout⟨⟩)
+
+Walking that effect finds no ✗click⟨#doc⟩ and no ✗timeout⟨⟩, so both
+registrations are reported as left behind. In React these are the two classic
+leaks: an addEventListener with no removeEventListener in the cleanup
+function, and a setTimeout with no clearTimeout — each block re-run stacks
+another live listener, and the timeout can fire after the component is gone.
+
+StaleListenerFixed is the same component written in the remove-then-bind
+discipline of §2, so its clk block is
+
+  clk | remove click<#doc>
+          * always click<#doc> {after 1r {@position * @returnVar}}
+          * cancel timeout<> * remove timeout<>
+          * eventually timeout<> {after 1r {@visible * @returnVar}}
+          * after 100ms {timeout<>}
+
+(paper glyphs: ✗click⟨#doc⟩ * □click⟨#doc⟩(○¹ʳ @position)
+                 * ⊘timeout⟨⟩ * ✗timeout⟨⟩ * ◇timeout⟨⟩(○¹ʳ @visible)
+                 * ○¹⁰⁰ᵐˢ timeout⟨⟩)
+
+and every registration is matched. Note that ⊘timeout⟨⟩ alone would not
+satisfy the check: cancel suppresses a pending firing of the event, while ✗
+is what unregisters the handlers.
+
+Adaptations: as in MovingDot, the click payload IS the coordinate pair
+(Willow has no field access), and the clk argument exists to host the
+mount-time block, since effects may only live in on-block bodies.
+*/

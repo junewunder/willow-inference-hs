@@ -1,0 +1,59 @@
+event click<#doc> : (int * int);
+event change<#checkCanMove> : bool;
+
+comp MovingDot (clk: int) : html {
+  state position, setPosition default (0, 0);
+  state canMove, setCanMove default true;
+  let handleClick = (e: (int * int)) => {
+    setPosition((p: (int * int)) => { e })
+  };
+  on canMove do {
+    remove click<#doc>;
+    canMove ? bind click<#doc> handleClick : ()
+  };
+  on clk do {
+    remove change<#checkCanMove>;
+    bind change<#checkCanMove> ((e: bool) => setCanMove((c: bool) => e))
+  };
+  return <div>
+    <input type="checkbox"
+      id="checkCanMove"
+      checked={canMove}
+    ></input>
+    <div transformX={position.0} transformY={position.1} />
+  </div>;
+}
+
+/*
+
+The paper's (§2) MovingDot, on the event layer.
+
+Target effects (paper §2):
+
+  bind click<#doc> handleClick : always click<#doc> {after 1r {@position}}
+  remove click<#doc>           : remove click<#doc>
+  on canMove block body        : remove click<#doc>
+                                   * (always click<#doc> {after 1r {@position}} + none)
+
+(paper glyphs: bind = □click⟨#doc⟩(○¹ʳ @position); remove = ✗click⟨#doc⟩;
+block body = ✗click⟨#doc⟩ * (□click⟨#doc⟩(○¹ʳ @position) + ·))
+
+Adaptations from the paper source:
+  - The paper's handler reads e.clientX / e.clientY; Willow has no field
+    access, so the event payload IS the coordinate pair
+    (event click<#doc> : (int * int);) and the handler stores it directly.
+  - The paper elides the returned html ("same html as in React"); this file
+    spells it out: a checkbox that toggles canMove, and the dot itself
+    positioned from the position state.
+  - The paper's checkbox is wired with a JSX onChange attribute; Willow has no
+    effectful JSX attributes, so the listener is bound by id in a mount-time
+    `on clk do { ... }` block (event change<#checkCanMove> : bool;), and the
+    clk argument exists to host that block.
+
+The clk block infers the same remove-then-bind shape one level up:
+
+  on clk block body : remove change<#checkCanMove>
+                        * always change<#checkCanMove> {after 1r {@canMove}}
+
+whose ○¹ʳ @canMove is exactly what re-triggers the canMove block above.
+*/

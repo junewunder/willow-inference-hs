@@ -1,0 +1,59 @@
+event change<#input> : string;
+
+comp TextInput<F>
+  ( defaultValue: string
+  , onChange: string -> unit | F
+  , validate: string -> bool
+  , clk: int
+  ) : html {
+  state text, setText default defaultValue;
+  let handleInputChange = (e: string) => {
+    setText((a: string) => { e })
+  };
+  let isValid = validate text;
+  on text do {
+    isValid ? (onChange text) : ()
+  };
+  on clk do {
+    remove change<#input>;
+    bind change<#input> handleInputChange;
+  };
+  return (
+    <div>
+      <input type="text"
+        id="input"
+        value={text}
+      />
+      {(not isValid) ? <span>input invalid</span> : <span></span>}
+    </div>
+  );
+}
+
+/*
+
+The paper's (§5.3) TextInput: a component polymorphic in its caller's latent
+effect, showing that an effect variable survives inference and is instantiated
+at the subcomponent boundary. Target cascades:
+
+  text : ?F + none
+  clk  : remove change<#input> * always change<#input> {after 1r {@text}}
+
+(paper glyphs: text ∣ F + ·; clk ∣ ✗change⟨#input⟩ * □change⟨#input⟩(○¹ʳ @text))
+
+Reading: TextInput is quantified over F, the effect of the onChange it is
+handed. Inside the component the cascade of text stays abstract — (F + ·),
+the + · being the isValid ternary that may decline to call onChange at all.
+Instantiating the component substitutes the caller's actual effect for F; a
+parent passing `(s: string) => setSaved(...)` turns ti.text into
+(after 1r {@saved} + none).
+
+Adaptations from the paper source:
+  - The paper's handler reads e.target.value; Willow has no field access, so
+    the event payload IS the new string (event change<#input> : string;) and
+    the handler stores it directly, as MovingDot does for its coordinates.
+  - The paper's input is wired with a JSX onChange attribute; Willow has no
+    effectful JSX attributes, so the listener is bound by id in a mount-time
+    `on clk do { ... }` block, and the clk argument exists to host it.
+  - The paper elides the returned html; this file spells out the input plus
+    the validity message driven by isValid.
+*/

@@ -1,0 +1,40 @@
+comp MutualRecursion (clock: int) : unit {
+  state x, setX default 0;
+  state y, setY default 0;
+  on x do { setY addOne };
+  on y do { setX addOne };
+  return ();
+}
+
+/*
+
+The paper's mutually-recursive setter loop — the inter-render loop Willow is
+built to find. Target cascades:
+
+  x : after 1r {@y * after 1r {loop[x]}}
+  y : after 1r {@x * after 1r {loop[y]}}
+
+(paper glyphs: x ∣ ○¹ʳ(@y * ○¹ʳ loop[x]), and dually for y)
+
+Reading: changing x re-runs the block watching x, which sets y one render
+later; y's block sets x one render after that, which is where the graph
+expansion revisits x and cuts the cycle with loop[x]. Neither block guards
+its write, so nothing breaks the cycle — every render schedules the next.
+
+Adaptations from the paper source:
+  - The paper writes the increment inline; here it is the builtin addOne, so
+    the block bodies stay a single application and the cascade is exactly the
+    loop with no extra state changes folded in.
+  - The component takes a clock argument and returns unit: it exists only to
+    host the two blocks, and renders nothing.
+
+This is the one paper example that never settles on mount, so it is also the
+example --first reports as looping:
+
+  willow-hs-exe --first examples/paper/MutualRecursion.txt
+    ⚠️  never settles — loops through y, x
+
+Both blocks run at mount and neither is branch-guarded, so every path through
+the mount effect reaches a loop — hence "never settles" rather than the
+"may not settle" that a guarded cycle earns.
+*/

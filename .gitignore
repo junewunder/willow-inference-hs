@@ -1,0 +1,7 @@
+*~
+*.swp
+*.hi
+*.o
+tarballs/
+.stack-work/
+dist-newstyle/
