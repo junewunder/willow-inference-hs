@@ -1,5 +1,9 @@
 # Willow
 
+[link to preprint on arxiv](https://arxiv.org/abs/2607.27074)
+
+below is an summary of intro and overview sections, as well as instructions on how to use the project :)
+
 **Willow** is a type-and-effect checker for a small React-like language. You write a
 program describing React components — state, effect blocks (`on … do`), `let`s, JSX,
 and sub-components — and Willow infers, for every component, not just its *type* but
@@ -20,6 +24,18 @@ and the metatheory that this implementation is meant to match, with the appendix
 README
 summarizes the paper for readers who haven't read it, then explains how to run the
 checker.
+
+```
+@misc{wunder2026typeandeffecttemporaldependencyanalysis,
+      title={A Type-and-Effect System for Temporal Dependency Analysis of Render-based Reactive Programs}, 
+      author={June Wunder and Ankush Das and Marco Gaboardi},
+      year={2026},
+      eprint={2607.27074},
+      archivePrefix={arXiv},
+      primaryClass={cs.PL},
+      url={https://arxiv.org/abs/2607.27074}, 
+}
+```
 
 ## The problem: reactive programs hide their timing
 
