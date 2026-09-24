@@ -134,12 +134,15 @@ subEffect f g = go (mergeDelays f) (mergeDelays g)
       | EffAfter (Time 0 _) f1' <- f1 = go f1' g1
       -- SE-ZERO-R: F ≤ F′ ⇒ F ≤ ○⁰F′
       | EffAfter (Time 0 _) g1' <- g1 = go f1 g1'
-      -- SE-PLUS-R: F ≤ F₁ and F ≤ F₂ ⇒ F ≤ F₁ + F₂ (+ is a meet)
-      | EffBranch g1' g2' <- g1 = go f1 g1' && go f1 g2'
+      -- SE-PLUS-L: F₁ ≤ F′ and F₂ ≤ F′ ⇒ F₁ + F₂ ≤ F′ (+ is a join).
+      -- Checked before SE-PLUS-R: this clause is invertible (the join is
+      -- the LEAST upper bound), so splitting the left branch first loses
+      -- nothing, e.g. F₁ + F₂ ≤ F₂ + F₁.
+      | EffBranch f1' f2' <- f1 = go f1' g1 && go f2' g1
+      -- SE-PLUS-R: F ≤ Fᵢ for some i ⇒ F ≤ F₁ + F₂ (each arm is below the branch)
+      | EffBranch g1' g2' <- g1 = go f1 g1' || go f1 g2'
       -- SE-MULT (n-ary): F ≤ Fᵢ for some i ⇒ F ≤ F₁ * … * Fₙ (* is a join)
       | EffSeq gs <- g1 = any (go f1) gs
-      -- SE-PLUS-L1 / SE-PLUS-L2: F₁ + F₂ ≤ F₁  and  F₁ + F₂ ≤ F₂
-      | EffBranch f1' f2' <- f1 = go f1' g1 || go f2' g1
       -- SE-DELAY(-EQ) — see the note below
       | EffAfter (Time t u) f1' <- f1
       , EffAfter (Time t' u') g1' <- g1 =

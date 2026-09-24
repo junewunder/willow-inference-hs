@@ -491,6 +491,9 @@ evaluation:
   the paper uses (`T-STATE-DECL`, `T-APP`, `SE-DELAY`, …).
 - **`PaperExamplesSpec`** — the paper's worked examples, checked end-to-end against the
   effects the paper reports.
+- **`SubEffectLawsSpec`** — QuickCheck properties of the sub-effecting relation over
+  generated effects: reflexivity, transitivity, and `+` as a join (each branch is below
+  the choice, and the choice is the least such effect).
 
 The rest of the suite covers the parser, inference, the two analyses, and a round trip
 that pins every effect printer against the parser. Run everything:
@@ -499,7 +502,7 @@ that pins every effect printer against the parser. Run everything:
 stack test
 ```
 
-Expect **191 examples, 0 failures**, in well under a second. The suite is the evidence
+Expect **200 examples, 0 failures**, in well under a second. The suite is the evidence
 for the paper's claims — a failure means the implementation or the paper is wrong, not
 that a test needs relaxing.
 

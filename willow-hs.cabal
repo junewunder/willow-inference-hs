@@ -108,6 +108,7 @@ test-suite willow-hs-test
       PaperRulesSpec
       ParseSpec
       RunAnnotatedSpec
+      SubEffectLawsSpec
       UtilSpec
       Paths_willow_hs
   hs-source-dirs:
@@ -117,7 +118,8 @@ test-suite willow-hs-test
       MultiParamTypeClasses, FlexibleInstances, GeneralizedNewtypeDeriving, NoImplicitPrelude, GADTs, KindSignatures, DataKinds, OverloadedStrings, NamedFieldPuns, LambdaCase, DeriveFunctor, TypeFamilies
   ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -Wunused-imports -Wno-unused-imports -threaded -rtsopts -with-rtsopts=-N
   build-depends:
-      base >=4.11 && <10
+      QuickCheck
+    , base >=4.11 && <10
     , bytestring
     , directory
     , filepath

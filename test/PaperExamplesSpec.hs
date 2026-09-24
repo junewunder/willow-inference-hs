@@ -264,7 +264,7 @@ spec = describe "Paper worked examples" $ do
     let suc = EventLabel "comp" ["suc"]
         err = EventLabel "comp" ["err"]
     -- The instantiated schema, feature for feature: after one unit u of
-    -- compute time either comp[suc] or comp[err] fires (+ is the meet); the
+    -- compute time either comp[suc] or comp[err] fires (+ is the join); the
     -- success branch runs F1 and removes comp[err] handlers (and dually) —
     -- every event is handled and all handlers are cleaned up.
     cascadeOf sigma "AsyncComp" "clk"

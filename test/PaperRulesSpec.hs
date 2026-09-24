@@ -191,7 +191,7 @@ spec = describe "Paper typing rules" $ do
       -- Propagation carries the · + · of a pure ternary child up through the
       -- node (it is never simplified to ·, per the · + · note on
       -- 'enforcePureStateDefault'), so acceptance here rides on the same
-      -- SE-PLUS-L1 path as the non-JSX ternary case below.
+      -- SE-PLUS-L path as the non-JSX ternary case below.
       (_sigma, typedComps) <- inferSource $ Text.unlines
         [ "comp TPureJSXTernary(b: bool) : html {"
         , "  let ok = <div>{b ? <span>y</span> : <span></span>}</div>;"
@@ -202,11 +202,12 @@ spec = describe "Paper typing rules" $ do
       getEffect okNode `shouldBe` EffBranch EffNone EffNone
 
     it "T-LET-DECL (side condition): a pure-but-non-· RHS (· + ·) is accepted" $ do
-      -- Pins the SE-PLUS-L1 acceptance path of the purity predicate: a pure
+      -- Pins the SE-PLUS-L acceptance path of the purity predicate: a pure
       -- ternary's effect is EffBranch EffNone EffNone — NEVER simplified to
       -- · (see the · + · note on 'enforcePureStateDefault') — so a
       -- structural-equality purity check (eff == EffNone) would FALSELY
-      -- reject this program while subEffect F EffNone accepts it (F₁+F₂ ≤ F₁).
+      -- reject this program while subEffect F EffNone accepts it (both arms
+      -- are ≤ ·, so · + · ≤ ·).
       -- The getEffect pin proves the test exercises that path: if the impl
       -- ever starts simplifying · + ·, it fails loudly instead of going
       -- vacuous.
@@ -223,7 +224,7 @@ spec = describe "Paper typing rules" $ do
       depsOf sigma "TLetPureTernary" "u" `shouldBe` ["b"]
 
     it "T-STATE-DECL (side condition): a pure ternary default (· + ·) is accepted" $ do
-      -- Same SE-PLUS-L1 acceptance path through the state-default check: the
+      -- Same SE-PLUS-L acceptance path through the state-default check: the
       -- default's effect is EffBranch EffNone EffNone ≤ ·. (Acceptance IS the
       -- assertion — a Left here is a false rejection.)
       result <- inferSourceEither $ Text.unlines
@@ -235,6 +236,47 @@ spec = describe "Paper typing rules" $ do
       case result of
         Left err -> expectationFailure ("pure ternary default falsely rejected: " <> Text.unpack (errorMessage err))
         Right (sigma, _typedComps) -> cascadeOf sigma "TStatePureTernary" "x" `shouldBe` EffNone
+
+    -- + is a join, so the purity check needs EVERY arm of a ternary to be
+    -- ≤ ·. Reading + as a meet (F₁ + F₂ ≤ Fᵢ) would discharge ○¹ʳ@x + · ≤ ·
+    -- through the pure arm, letting a ternary smuggle a state change past
+    -- T-LET-DECL with @x lost from the inferred effect.
+    it "T-LET-DECL (side condition): a ternary with one effectful arm is rejected" $ do
+      result <- inferSourceEither $ Text.unlines
+        [ "comp TLetSneakyTernary(flag: bool) : unit {"
+        , "  state x, setX default 0;"
+        , "  let v = flag ? setX(addOne) : ();"
+        , "  return ();"
+        , "}"
+        ]
+      case result of
+        Left err -> Text.unpack (errorMessage err) `shouldContain` "Impure let right-hand side for 'v'"
+        Right _ -> expectationFailure "ternary with an effectful arm passed the purity check"
+
+    it "T-LET-DECL (side condition): a ternary with both arms pure is accepted" $ do
+      result <- inferSourceEither $ Text.unlines
+        [ "comp TLetUnitTernary(flag: bool) : unit {"
+        , "  state x, setX default 0;"
+        , "  let v = flag ? () : ();"
+        , "  return ();"
+        , "}"
+        ]
+      case result of
+        Left err -> expectationFailure ("pure ternary falsely rejected: " <> Text.unpack (errorMessage err))
+        Right (sigma, _typedComps) -> depsOf sigma "TLetUnitTernary" "v" `shouldBe` ["flag"]
+
+    it "T-LET-DECL (side condition): a ternary with both arms effectful is rejected" $ do
+      result <- inferSourceEither $ Text.unlines
+        [ "comp TLetEffectfulTernary(flag: bool) : unit {"
+        , "  state x, setX default 0;"
+        , "  state y, setY default 0;"
+        , "  let v = flag ? setX(addOne) : setY(addOne);"
+        , "  return ();"
+        , "}"
+        ]
+      case result of
+        Left err -> Text.unpack (errorMessage err) `shouldContain` "Impure let right-hand side for 'v'"
+        Right _ -> expectationFailure "ternary with two effectful arms passed the purity check"
 
     it "T-LET-DECL (side condition): an effect-variable RHS is conservatively rejected" $ do
       -- EffVar is SE-EQ-only, so ?e ≰ ·: an effect-polymorphic function's
@@ -767,22 +809,27 @@ spec = describe "Paper typing rules" $ do
       subEffect EffNone (EffAfter (Time 0 Renders) (at "x")) `shouldBe` True
       subEffect (at "x") (at "y") `shouldBe` False
 
-    it "SE-PLUS-R: F ≤ F₁ and F ≤ F₂ implies F ≤ F₁ + F₂ (+ is a meet)" $ do
+    it "SE-PLUS-R: F ≤ Fᵢ implies F ≤ F₁ + F₂ (each arm is below the branch)" $ do
+      -- F ≤ F₁ suffices; so does F ≤ F₂
+      subEffect (at "x") (branchE (at "x") (at "y")) `shouldBe` True
+      subEffect (at "y") (branchE (at "x") (at "y")) `shouldBe` True
       subEffect EffNone (branchE (at "x") (EffEvent click)) `shouldBe` True
-      -- the right conjunct itself goes through SE-MULT
-      subEffect (at "x") (branchE (at "x") (seqE [at "x", at "y"])) `shouldBe` True
-      -- the premise demands F ≤ BOTH branches
-      subEffect (at "x") (branchE (at "x") (at "y")) `shouldBe` False
-      -- branch commutativity IS derivable (PLUS-R + PLUS-L1/L2 + TRANS)
+      -- the premise itself may go through SE-MULT
+      subEffect (at "x") (branchE (at "z") (seqE [at "x", at "y"])) `shouldBe` True
+      -- F must be below at least one arm
+      subEffect (at "z") (branchE (at "x") (at "y")) `shouldBe` False
+
+    it "SE-PLUS-L: F₁ ≤ F′ and F₂ ≤ F′ implies F₁ + F₂ ≤ F′ (+ is a join)" $ do
+      subEffect (branchE EffNone EffNone) EffNone `shouldBe` True
+      subEffect (branchE EffNone (at "x")) (at "x") `shouldBe` True
+      subEffect (branchE (at "x") (at "y")) (seqE [at "x", at "y"]) `shouldBe` True
+      -- branch commutativity is derivable (PLUS-L, then PLUS-R per arm)
       subEffect (branchE (at "x") (at "y")) (branchE (at "y") (at "x")) `shouldBe` True
-
-    it "SE-PLUS-L1: F₁ + F₂ ≤ F₁" $ do
-      subEffect (branchE (at "x") (at "y")) (at "x") `shouldBe` True
-      subEffect (branchE (at "x") (at "y")) (at "z") `shouldBe` False
-
-    it "SE-PLUS-L2: F₁ + F₂ ≤ F₂" $ do
-      subEffect (branchE (at "x") (at "y")) (at "y") `shouldBe` True
-      subEffect (branchE (at "x") (at "y")) (at "z") `shouldBe` False
+      -- the old, unsound direction is gone: a branch is NOT below one of its
+      -- arms, because that would lose the other arm (reviewer B's objection)
+      subEffect (branchE (at "x") (at "y")) (at "x") `shouldBe` False
+      subEffect (branchE (at "x") (at "y")) (at "y") `shouldBe` False
+      subEffect (branchE (after1r (at "x")) EffNone) EffNone `shouldBe` False
 
     it "SE-MULT: F ≤ Fᵢ implies F ≤ F₁ * F₂ (* is a join)" $ do
       subEffect (at "x") (seqE [at "x", at "y"]) `shouldBe` True

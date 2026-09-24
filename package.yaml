@@ -84,6 +84,7 @@ tests:
     dependencies:
     - willow-hs
     - hspec
+    - QuickCheck
     - prettyprinter >= 1.7.1
 
     ghc-options:

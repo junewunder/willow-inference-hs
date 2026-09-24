@@ -145,9 +145,12 @@ inferTyEffDeclsM sigma sigmaE tyEnv delta (d : ds) = do
 -- predicate (NOT structural equality, NOT 'simplifyEffect'):
 --
 --   * SE-EQ accepts @EffNone@ itself;
---   * SE-PLUS-L1/L2 accept @EffBranch EffNone EffNone@ — a pure ternary's
+--   * SE-PLUS-L accepts @EffBranch EffNone EffNone@ — a pure ternary's
 --     effect, which the impl never simplifies to @·@ (the @· + ·@ gotcha),
---     so a structural equality check would falsely reject it;
+--     so a structural equality check would falsely reject it. @· + · ≤ ·@
+--     holds because BOTH arms are @≤ ·@; a ternary with an impure arm
+--     (e.g. @○¹ʳ\@x + ·@) is rejected, because @+@ is a join and the
+--     impure arm is not below @·@;
 --   * SE-ZERO-L accepts grade-0 delays of pure effects (@○⁰ F ≤ F@).
 --
 -- @EffVar@ is SE-EQ-only, so an effect-variable RHS is conservatively
