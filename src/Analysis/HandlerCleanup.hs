@@ -116,9 +116,11 @@ footprints eff = case eff of
   EffEventually lbl body -> register OneShot lbl (footprints body)
   EffSeq es -> List.foldl' merge [mempty] (map footprints es)
   EffBranch e1 e2 -> dedup (footprints e1 ++ footprints e2)
-  -- Both stand for effects the walk cannot see: an uninstantiated effect
-  -- variable, and the point where graph expansion cut off a cycle.
+  -- All three stand for effects the walk cannot see: an uninstantiated
+  -- effect variable of either kind, and the point where graph expansion cut
+  -- off a cycle.
   EffVar _ -> [mempty {fpOpaque = True}]
+  EffUnif _ -> [mempty {fpOpaque = True}]
   EffLoop _ -> [mempty {fpOpaque = True}]
   where
     register kind lbl =

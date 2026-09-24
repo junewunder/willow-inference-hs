@@ -57,7 +57,9 @@ Everything runs in `RIO RIOApp`. `RIOApp` carries the log func, process context,
   They share notation and parenthesization and differ only in layout — a change to one
   is almost always a change to both. Both print the concrete syntax `Parse.pEffect`
   accepts; `test/EffectPrettySpec.hs` pins that round trip, so a printer change that
-  breaks it fails the suite rather than silently emitting unparseable output.
+  breaks it fails the suite rather than silently emitting unparseable output. The one
+  deliberate exception is a unification variable (`EffUnif`), printed `?_e3` so that it
+  cannot be read back as a written variable.
 - **`*` binds looser than `+`** in the effect grammar (`pEffect` is a `*`-separated
   list of `+`-chains) — the opposite of arithmetic. The printers deliberately bracket
   every mixed grouping instead of relying on the reader knowing that; don't "simplify"

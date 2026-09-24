@@ -94,6 +94,14 @@ spec = do
       forM_ examples $ \(name, eff) ->
         (name, reparse (canonical eff)) `shouldBe` (name, Right eff)
 
+    -- The one deliberate exception to the round trip. A unification variable
+    -- is the checker's own unknown: a spelling that reparsed would make it a
+    -- written variable, which means something else.
+    it "prints a unification variable as ?_e3, a spelling the parser rejects" $ do
+      canonical (EffUnif 3) `shouldBe` "?_e3"
+      renderEffect 72 (EffUnif 3) `shouldBe` "?_e3"
+      isLeft (reparse "?_e3") `shouldBe` True
+
   describe "renderEffect (readable, line-broken)" $ do
     it "reparses to the effect it was printed from, at every width" $
       forM_ [20, 40, 72, 200] $ \width ->

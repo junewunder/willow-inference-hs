@@ -53,6 +53,8 @@ module Types
     emptySigma,
     emptySigmaE,
     EffVarName (..),
+    EffVarKey (..),
+    effVarKeyEffect,
     -- Helper functions
     getSpanFromSourceAnn,
     getSpanFromNodeAnn,
@@ -299,6 +301,17 @@ data Type
 newtype EffVarName = EffVarName Text
   deriving (Eq, Show, Ord)
 
+-- | An effect variable of either kind, as a key for substitutions and
+-- free-variable sets: a written ('EffVar') one by name, a unification
+-- ('EffUnif') one by number.
+data EffVarKey = Written EffVarName | Unif Int
+  deriving (Eq, Show, Ord)
+
+-- | The effect that a key stands for.
+effVarKeyEffect :: EffVarKey -> Effect
+effVarKeyEffect (Written v) = EffVar v
+effVarKeyEffect (Unif n) = EffUnif n
+
 -- | An event label ℓ⟨v⟩: an event-kind name plus a tuple of statically-known
 -- base values (stored verbatim, e.g. "#doc" keeps its '#'; empty tuple allowed,
 -- e.g. timeout<>).
@@ -312,7 +325,8 @@ data Effect
   | EffAfter Delay Effect
   | EffSeq [Effect]
   | EffBranch Effect Effect
-  | EffVar EffVarName
+  | EffVar EffVarName                   -- ^ written effect variable (rigid)
+  | EffUnif Int                         -- ^ unification variable (flexible)
   | EffEvent EventLabel                 -- ^ event effect ℓ⟨v⟩
   | EffAlways EventLabel Effect         -- ^ □ modality (bind/always)
   | EffEventually EventLabel Effect     -- ^ ◇ modality (once/eventually)
@@ -321,10 +335,11 @@ data Effect
   deriving (Eq, Show, Ord)
 
 -- | True iff the effect tree contains NO event-layer constructor
--- (EffEvent/EffAlways/EffEventually/EffCancel/EffRemove) and NO EffVar
--- anywhere. Only such trees are idempotent under sequencing (owner ruling
--- 2026-07-17: @x * @x = @x, but ℓ⟨v⟩ * ℓ⟨v⟩ ≠ ℓ⟨v⟩, and ?e may instantiate
--- to an event effect, so it is conservatively not idempotent).
+-- (EffEvent/EffAlways/EffEventually/EffCancel/EffRemove) and NO effect
+-- variable (EffVar/EffUnif) anywhere. Only such trees are idempotent under
+-- sequencing (owner ruling 2026-07-17: @x * @x = @x, but ℓ⟨v⟩ * ℓ⟨v⟩ ≠ ℓ⟨v⟩,
+-- and ?e may instantiate to an event effect, so it is conservatively not
+-- idempotent).
 isIdempotentEffect :: Effect -> Bool
 isIdempotentEffect eff = case eff of
   EffNone -> True
@@ -334,6 +349,7 @@ isIdempotentEffect eff = case eff of
   EffSeq es -> all isIdempotentEffect es
   EffBranch e1 e2 -> isIdempotentEffect e1 && isIdempotentEffect e2
   EffVar _ -> False
+  EffUnif _ -> False
   EffEvent _ -> False
   EffAlways _ _ -> False
   EffEventually _ _ -> False
@@ -363,6 +379,7 @@ data EffectSummary
   | EffSSeq (OSet.OSet EffectSummary)
   | EffSBranch EffectSummary EffectSummary
   | EffSVar EffVarName
+  | EffSUnif Int
   | EffSEvent EventLabel
   | EffSAlways EventLabel EffectSummary
   | EffSEventually EventLabel EffectSummary
@@ -545,6 +562,7 @@ prettyEffectPrec d eff = case eff of
   EffLoop n -> "loop[" <> pretty n <> "]"
   EffStateChange n -> "@" <> pretty n
   EffVar v -> pretty v
+  EffUnif n -> prettyUnif n
   EffEvent lbl -> pretty lbl
   EffCancel lbl -> "cancel" <+> pretty lbl
   EffRemove lbl -> "remove" <+> pretty lbl
@@ -651,6 +669,7 @@ prettyEffectSummaryPrec d eff = case eff of
   EffSLoop -> "loop"
   EffSItem -> "@"
   EffSVar v -> pretty v
+  EffSUnif n -> prettyUnif n
   EffSEvent lbl -> pretty lbl
   EffSCancel lbl -> "cancel" <+> pretty lbl
   EffSRemove lbl -> "remove" <+> pretty lbl
@@ -686,6 +705,14 @@ instance Pretty Type where
 
 instance Pretty EffVarName where
   pretty (EffVarName n) = "?" <> pretty n
+
+-- | A unification variable prints as @?_e3@. The underscore is deliberate:
+-- an identifier cannot start with one, so the parser rejects the spelling.
+-- A unification variable is the checker's own unknown, not something a
+-- program can name, and a spelling that reparsed would turn it into a
+-- written variable (as OCaml's @'_weak1@ cannot be written either).
+prettyUnif :: Int -> Doc ann
+prettyUnif n = "?_e" <> pretty n
 
 -- Pretty instances for Cofree-based types
 instance Pretty Program where

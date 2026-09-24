@@ -44,6 +44,9 @@ data InferenceError = InferenceError
 data InferenceContext = InferenceContext
   { currentSourceInfo :: Maybe Span
   , currentExpression :: Text  -- String representation of current expression
+  , scopedEffVars :: Set EffVarName
+    -- ^ written effect variables bound by the enclosing component: its
+    -- declared effect parameters and those its argument types mention
   }
 
 -- | Context-aware inference monad
@@ -90,13 +93,14 @@ instance Exception InferenceError where
 -- | Run inference with an initial context
 runInferenceWithContext :: Maybe Span -> Text -> InferenceM a -> RIO RIOApp (Either InferenceError a)
 runInferenceWithContext srcInfo exprText (InferenceM m) =
-  runReaderT (runExceptT m) (InferenceContext srcInfo exprText)
+  runReaderT (runExceptT m) (InferenceContext srcInfo exprText mempty)
 
 -- | Update the current context with new source information
 withSourceContext :: Maybe Span -> Text -> InferenceM a -> InferenceM a
 withSourceContext Nothing _exprText (InferenceM m) = InferenceM m
 withSourceContext srcInfo exprText (InferenceM m) =
-  InferenceM $ ExceptT $ ReaderT.local (const (InferenceContext srcInfo exprText)) (runExceptT m)
+  InferenceM $ ExceptT $ ReaderT.local
+    (\ctx -> ctx {currentSourceInfo = srcInfo, currentExpression = exprText}) (runExceptT m)
 
 -- | Log a value with the current source context
 logValue :: (HasCallStack, Show a) => a -> InferenceM ()

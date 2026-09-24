@@ -45,7 +45,8 @@ fullEffect delta (EffSeq es) =
    in List.foldr effSeq EffNone re
 fullEffect delta (EffBranch e1 e2) = EffBranch (fullEffect delta e1) (fullEffect delta e2)
 fullEffect _ (EffVar x) = EffVar x
--- Event-layer leaves do not expand via Delta (like EffVar); modalities recurse.
+fullEffect _ (EffUnif n) = EffUnif n
+-- Event-layer leaves do not expand via Delta (like variables); modalities recurse.
 fullEffect _ (EffEvent lbl) = EffEvent lbl
 fullEffect delta (EffAlways lbl e) = EffAlways lbl (fullEffect delta e)
 fullEffect delta (EffEventually lbl e) = EffEventually lbl (fullEffect delta e)
@@ -78,7 +79,8 @@ cascadeEffect delta (EffSeq effs) noRepeat visited =
 cascadeEffect delta (EffBranch f1 f2) noRepeat visited =
   EffBranch (cascadeEffect delta f1 noRepeat visited) (cascadeEffect delta f2 noRepeat visited)
 cascadeEffect _ (EffVar x) _ _ = EffVar x
--- Event-layer leaves do not cascade via Delta (like EffVar); modalities recurse.
+cascadeEffect _ (EffUnif n) _ _ = EffUnif n
+-- Event-layer leaves do not cascade via Delta (like variables); modalities recurse.
 cascadeEffect _ (EffEvent lbl) _ _ = EffEvent lbl
 cascadeEffect delta (EffAlways lbl f1) _ visited =
   EffAlways lbl (cascadeEffect delta f1 [] visited)
@@ -161,7 +163,7 @@ subEffect f g = go (mergeDelays f) (mergeDelays g)
       -- SE-SUBEFFECTING family: · refines into any single leaf
       | EffNone <- f1
       , isSubEffectLeaf g1 = True
-      -- Anything else: no printed rule (e.g. EffSeq or EffVar on the left,
+      -- Anything else: no printed rule (e.g. EffSeq or a variable on the left,
       -- EffAfter with a Plus/cross-unit grade, EffLoop, mismatched shapes).
       | otherwise = False
     isSubEffectLeaf eff = case eff of
@@ -254,6 +256,7 @@ relevantEffect (EffSeq es) =
   in List.foldr effSeq EffNone re
 relevantEffect (EffBranch e1 e2) = EffBranch (relevantEffect e1) (relevantEffect e2)
 relevantEffect (EffVar x) = EffVar x
+relevantEffect (EffUnif n) = EffUnif n
 relevantEffect (EffEvent lbl) = EffEvent lbl
 relevantEffect (EffAlways lbl e) = EffAlways lbl (relevantEffect e)
 relevantEffect (EffEventually lbl e) = EffEventually lbl (relevantEffect e)

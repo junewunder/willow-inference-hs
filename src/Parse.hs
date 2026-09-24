@@ -663,6 +663,8 @@ pDelayTerm = Time . fromInteger <$> lexeme integer <*> pUnit
 -- | Parse an effect variable name
 -- | Parse an effect variable name. The leading @?@ is optional on input but is
 -- always produced on output (see 'prettyEffect'), so printed effects reparse.
+-- This parses written variables only: a unification variable prints as
+-- @?_e3@, which is deliberately not an identifier (see 'Types.prettyUnif').
 pEffVar :: AnnotatedParser EffVarName
 pEffVar = EffVarName <$> (option "" (symbol "?") *> pIdentifier)
 

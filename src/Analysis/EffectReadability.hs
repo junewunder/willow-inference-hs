@@ -23,6 +23,7 @@ effectSummary (EffAfter delay eff) = EffSAfter delay (effectSummary eff)
 effectSummary (EffSeq effs) = EffSSeq $ OSet.fromList $ List.map effectSummary effs
 effectSummary (EffBranch eff1 eff2) = EffSBranch (effectSummary eff1) (effectSummary eff2)
 effectSummary (EffVar v) = EffSVar v
+effectSummary (EffUnif n) = EffSUnif n
 effectSummary (EffEvent lbl) = EffSEvent lbl
 effectSummary (EffAlways lbl eff) = EffSAlways lbl (effectSummary eff)
 effectSummary (EffEventually lbl eff) = EffSEventually lbl (effectSummary eff)

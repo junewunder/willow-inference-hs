@@ -338,6 +338,34 @@ spec = describe "Paper typing rules" $ do
       cascadeOf sigma "TOnCauses" "clk"
         `shouldBe` seqE [after1r (at "a"), after1r (at "b")]
 
+    it "T-ON-DECL (negative): watching an unknown name is an unbound-variable error" $ do
+      -- The premise Δ ⊢ @xᵢ ⇒ F needs an entry for each xᵢ. Without the
+      -- check, the cascade update skipped the name and the block's effect
+      -- was recorded nowhere.
+      result <- inferSourceEither $ Text.unlines
+        [ "comp TOnUnknown(clk: int) : unit {"
+        , "  state x, setX default 0;"
+        , "  on nope do { setX(addOne) };"
+        , "  return ();"
+        , "}"
+        ]
+      case result of
+        Left err -> Text.unpack (errorMessage err) `shouldContain` "Variable not in scope: nope"
+        Right _ -> expectationFailure "an on-block over an unknown name was accepted"
+
+    it "T-ON-DECL (negative): a name in scope without a Δ entry (a setter, a built-in) cannot be watched" $ do
+      forM_ ["setX", "once"] $ \name -> do
+        result <- inferSourceEither $ Text.unlines
+          [ "comp TOnNoEntry(clk: int) : unit {"
+          , "  state x, setX default 0;"
+          , "  on " <> name <> " do { setX(addOne) };"
+          , "  return ();"
+          , "}"
+          ]
+        case result of
+          Left err -> Text.unpack (errorMessage err) `shouldContain` ("Cannot watch " <> Text.unpack name)
+          Right _ -> expectationFailure ("an on-block over " <> Text.unpack name <> " was accepted")
+
     it "T-SUBCOMP-DECL: A's Δ is α-renamed with the instance prefix; args and return are wired as dependencies" $ do
       (sigma, _typedComps) <- inferSource $ Text.unlines
         [ "comp Inner(v: int) : int {"

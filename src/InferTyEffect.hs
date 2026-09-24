@@ -10,11 +10,16 @@ module InferTyEffect
   , buildSigmaE
   , lookupEventPayload
   , module InferenceMonad
+  , EffSubst
   , substEffect
   , substType
   , instantiateSchema
   , unifyEffect
   , unifyType
+  , generalizeEffect
+  , freeEffVarsEffect
+  , freeEffVarsType
+  , writtenNamesType
   , enforcePureStateDefault
   , enforcePureLetRHS
   ) where
@@ -28,6 +33,7 @@ import Builtins (removeLibFns, tyLibraryFunctions)
 import ErrorDisplay (handleInferenceError)
 import Analysis.Common (subEffect)
 
+import Control.Monad.Trans.Except (catchE)
 import qualified Control.Comonad.Trans.Cofree as CFT
 import qualified RIO.List as List
 import qualified RIO.Map as Map
@@ -100,7 +106,17 @@ inferTyEffComponentM sigma sigmaE compNode@(_ :< ComponentF name effParams args 
   withSourceContext (Just span) componentText $ do
     let env0 = Map.union (Map.fromList args) tyLibraryFunctions
         effEnv0 = Delta (Map.fromList (List.map (\(x, _) -> (x, DeltaEntry [] EffNone)) args))
-    (env1, effEnv1, tdecls) <- inferTyEffDeclsM sigma sigmaE env0 effEnv0 decls
+        -- The component's declared effect parameters are bound by @comp C<F>@,
+        -- so they belong to the context even where no argument type mentions
+        -- them: generalisation must not quantify them.
+        scope = Set.fromList (map Written effParams)
+        -- What a λ-parameter annotation may refer to rigidly: the declared
+        -- parameters and the variables the argument types mention, which the
+        -- component treats as parameters too (see 'DeclSubCompF').
+        scoped = Set.fromList effParams
+          <> Set.fromList [v | (_, t) <- args, Written v <- toList (freeEffVarsType t)]
+    (env1, effEnv1, tdecls) <- local (\ctx -> ctx {scopedEffVars = scoped}) $
+      inferTyEffDeclsM sigma sigmaE scope env0 effEnv0 decls
     -- Find the source location for the return variable from its declaration
     let findRetVarLocation :: Text -> [Declaration] -> Maybe SourceAnnotation
         findRetVarLocation _ [] = Nothing
@@ -130,11 +146,11 @@ inferTyEffComponentM sigma sigmaE compNode@(_ :< ComponentF name effParams args 
     pure ((tdecls, tret), sigma')
 
 -- | Context-aware declaration list inference
-inferTyEffDeclsM :: Sigma -> SigmaE -> TyEnv -> Delta -> [Declaration] -> InferenceM (TyEnv, Delta, [AnnotatedDeclaration])
-inferTyEffDeclsM _ _ tyEnv delta [] = return (tyEnv, delta, [])
-inferTyEffDeclsM sigma sigmaE tyEnv delta (d : ds) = do
-  (tyEnv', delta', texpr) <- inferTyEffDeclM sigma sigmaE tyEnv delta d
-  (tyEnv'', delta'', texprs) <- inferTyEffDeclsM sigma sigmaE tyEnv' delta' ds
+inferTyEffDeclsM :: Sigma -> SigmaE -> Set EffVarKey -> TyEnv -> Delta -> [Declaration] -> InferenceM (TyEnv, Delta, [AnnotatedDeclaration])
+inferTyEffDeclsM _ _ _ tyEnv delta [] = return (tyEnv, delta, [])
+inferTyEffDeclsM sigma sigmaE scope tyEnv delta (d : ds) = do
+  (tyEnv', delta', texpr) <- inferTyEffDeclM sigma sigmaE scope tyEnv delta d
+  (tyEnv'', delta'', texprs) <- inferTyEffDeclsM sigma sigmaE scope tyEnv' delta' ds
   return (tyEnv'', delta'', texpr : texprs)
 
 -- | Enforce the paper's purity premises
@@ -153,8 +169,8 @@ inferTyEffDeclsM sigma sigmaE tyEnv delta (d : ds) = do
 --     impure arm is not below @·@;
 --   * SE-ZERO-L accepts grade-0 delays of pure effects (@○⁰ F ≤ F@).
 --
--- @EffVar@ is SE-EQ-only, so an effect-variable RHS is conservatively
--- REJECTED: it may instantiate to an impure effect, and the paper has no
+-- An effect variable (@EffVar@ or @EffUnif@) is SE-EQ-only, so an
+-- effect-variable RHS is conservatively REJECTED: it may instantiate to an impure effect, and the paper has no
 -- effect polymorphism. NEVER route this through 'simplifyEffect': its
 -- @isCompilerVar → ·@ clause is an analysis-view shortcut that would wrongly
 -- ACCEPT effects.
@@ -180,9 +196,11 @@ enforcePureLetRHS var eff =
         <> "': T-LET-DECL requires Gamma |- e : tau | . , but the bound expression has effect "
         <> show (pretty eff)
 
--- | Context-aware declaration inference
-inferTyEffDeclM :: Sigma -> SigmaE -> TyEnv -> Delta -> Declaration -> InferenceM (TyEnv, Delta, AnnotatedDeclaration)
-inferTyEffDeclM (Sigma sigma) sigmaE tyEnv effEnv declNode@(_ :< declF) = do
+-- | Context-aware declaration inference. @scope@ holds the component's
+-- declared effect parameters, which are part of the context for
+-- generalisation (see 'contextFreeVars').
+inferTyEffDeclM :: Sigma -> SigmaE -> Set EffVarKey -> TyEnv -> Delta -> Declaration -> InferenceM (TyEnv, Delta, AnnotatedDeclaration)
+inferTyEffDeclM (Sigma sigma) sigmaE scope tyEnv effEnv declNode@(_ :< declF) = do
   let span = getDeclarationSpan declNode
       declText = Text.pack (show (pretty declNode))
   withSourceContext (Just span) declText $ case declF of
@@ -196,31 +214,42 @@ inferTyEffDeclM (Sigma sigma) sigmaE tyEnv effEnv declNode@(_ :< declF) = do
           effEnv' = Delta (Map.insert var (DeltaEntry [] EffNone) (unDelta effEnv))
       pure (env', effEnv', SourceAnnotation span :< DeclStateF var setter texpr)
     DeclEffectF deps (Block exprs) -> do
+      -- T-ON-DECL: each watched name must have a Δ entry. Without this
+      -- check an unknown name is skipped by the update below and the block's
+      -- effect is lost.
+      forM_ deps $ \x -> unless (Map.member x (unDelta effEnv)) $
+        fail $ if Map.member x tyEnv
+          then "Cannot watch " <> Text.unpack x <> " in `on`: it is not an argument, state variable, let or instance"
+          else "Variable not in scope: " <> Text.unpack x
       texprs <- mapM (inferTyEffExprTypedM sigmaE tyEnv effEnv) exprs
       let blockEffects = map getEffect texprs
           combinedEffect = seqMany blockEffects
           f casc x = Map.update (\(DeltaEntry d e) -> Just $ DeltaEntry d (effSeq e combinedEffect)) x casc
           effEnv' = List.foldl f (unDelta effEnv) deps
       pure (tyEnv, Delta effEnv', SourceAnnotation span :< DeclEffectF deps (Block texprs))
+    -- Both kinds of let are generalised, as in Hindley–Milner: the purity
+    -- premise already makes the right-hand side a value-like expression, so
+    -- no value restriction is needed.
     DeclLetF var (Just sch) expr -> do
       texpr <- inferTyEffExprTypedM sigmaE tyEnv effEnv expr
       -- T-LET-DECL purity premise: before env/effEnv updates AND
-      -- before unifyType against the annotation (see the placement contract
+      -- before the check against the annotation (see the placement contract
       -- on 'enforcePureStateDefault').
       enforcePureLetRHS var (getEffect texpr)
-      let ty = getType texpr
-          ty' = generalizeEffect ty
-          env' = Map.insert var ty' tyEnv
+      let ctx = contextFreeVars scope tyEnv
+          inferred = generalizeEffect ctx (getType texpr)
+      checkAnnotation var ctx sch inferred
+      -- The declared type is the binding's type.
+      let env' = Map.insert var sch tyEnv
           deps = toList $ freeVars expr
           newEntry = DeltaEntry deps EffNone
           effEnv' = Delta (Map.insert var newEntry (unDelta effEnv))
-      _ <- unifyType ty' sch
       pure (env', effEnv', SourceAnnotation span :< DeclLetF var (Just sch) texpr)
     DeclLetF var Nothing expr -> do
       texpr <- inferTyEffExprTypedM sigmaE tyEnv effEnv expr
       -- T-LET-DECL purity premise.
       enforcePureLetRHS var (getEffect texpr)
-      let ty = getType texpr
+      let ty = generalizeEffect (contextFreeVars scope tyEnv) (getType texpr)
           env' = Map.insert var ty tyEnv
           deps = toList $ freeVars expr
           newEntry = DeltaEntry deps EffNone
@@ -228,12 +257,29 @@ inferTyEffDeclM (Sigma sigma) sigmaE tyEnv effEnv declNode@(_ :< declF) = do
       pure (env', effEnv', SourceAnnotation span :< DeclLetF var Nothing texpr)
     (DeclSubCompF instName compName effAnnots argNames) -> do
       case Map.lookup compName sigma of
-        Just (SigmaEntry (_ :< subComp) (Delta subCompDelta)) -> do
-          let ComponentF {compFArgs = args, compFReturn = retName, compFReturnType = retTy, compFEffectParams = effParams} = subComp
+        Just (SigmaEntry (_ :< subComp) (Delta subCompDelta0)) -> do
+          let ComponentF {compFArgs = args0, compFReturn = retName, compFReturnType = retTy0, compFEffectParams = effParams} = subComp
+
+          -- Rename the component's effect variables apart, as instantiating
+          -- a schema does: a component is closed, so every effect variable
+          -- free in its interface (its declared parameters, and whatever its
+          -- argument types, return type and Δ mention) is quantified, and
+          -- each instance gets fresh unification variables for them.
+          let interfaceVars = Set.unions
+                [ Set.fromList (map Written effParams)
+                , Set.unions (map (freeEffVarsType . snd) args0)
+                , freeEffVarsType retTy0
+                , Set.unions [freeEffVarsEffect e | DeltaEntry _ e <- Map.elems subCompDelta0]
+                ]
+          renaming <- Map.fromList <$> mapM (\k -> (\n -> (k, EffUnif n)) <$> freshUnifVar) (toList interfaceVars)
+          let args = [(n, substType renaming t) | (n, t) <- args0]
+              retTy = substType renaming retTy0
+              subCompDelta = Map.map (substDeltaEntry renaming) subCompDelta0
+              effParams' = map (\p -> Map.findWithDefault (EffVar p) (Written p) renaming) effParams
 
           -- Validate and build substitutions
           validateArgumentCount args compName
-          effSubst <- buildEffectSubstitution effParams
+          effSubst <- buildEffectSubstitution effParams'
           unificationSubst <- validateArgumentTypes args tyEnv effSubst
           let finalSubst = Map.union unificationSubst effSubst
 
@@ -252,7 +298,7 @@ inferTyEffDeclM (Sigma sigma) sigmaE tyEnv effEnv declNode@(_ :< declF) = do
 
         buildEffectSubstitution effParams = do
           let effsList = fromMaybe (replicate (length effParams) Nothing) effAnnots
-          return $ Map.fromList [(effParam, effVal) | (effParam, Just effVal) <- zip effParams effsList]
+          return $ Map.fromList [(Unif u, effVal) | (EffUnif u, Just effVal) <- zip effParams effsList]
 
         validateArgumentTypes args env effSubst = do
           let argPairs = zip argNames (map snd args)
@@ -260,7 +306,14 @@ inferTyEffDeclM (Sigma sigma) sigmaE tyEnv effEnv declNode@(_ :< declF) = do
           where
             validateSingleArgument subst (argName, expectedTy) =
               case Map.lookup argName env of
-                Just actualTy -> do
+                Just actualSch -> do
+                  -- An argument is an occurrence of a variable, so its type
+                  -- is instantiated as at 'EVarF' — unless the parameter
+                  -- is itself a schema, which the argument's schema must
+                  -- then match up to renaming (see 'unifyType').
+                  actualTy <- case expectedTy of
+                    TArrow (_ : _) _ _ _ -> pure actualSch
+                    _ -> instantiateSchema actualSch
                   let expectedTy' = substType effSubst (substType subst expectedTy)
                   s <- unifyType expectedTy' actualTy
                   return (Map.union subst s)
@@ -323,8 +376,8 @@ inferTyEffExprTypedM sigmaE env effEnv inputNode@(_ :< langF) = do
         tnode <- inferTyEffJSXNodeTypedM sigmaE env effEnv node
         return $ mkTypedExpr span THtml (getEffect tnode) (EJSXNodeF tnode)
       EArrowF vs param mTy body -> do
-        let paramTy = fromMaybe TAny mTy
-            env' = Map.insert param paramTy env
+        paramTy <- maybe (pure TAny) flexibleParamAnnotation mTy
+        let env' = Map.insert param paramTy env
         tbody <- inferTyEffExprTypedM sigmaE env' effEnv body
         let bodyTy = getType tbody
             bodyEff = getEffect tbody
@@ -543,12 +596,29 @@ ensureMono t@(TArrow [] _ _ _) = t
 ensureMono t@(TArrow {}) = error $ "Expected monomorphic type, got schema: " ++ show t
 ensureMono t = t
 
+-- ---------------------------------------------------------------------------
+-- Effect variables
+--
+-- There are two kinds, as in Hindley–Milner with rigid and flexible
+-- variables. A written variable ('EffVar': a component's effect parameter, a
+-- @forall@ binder, an effect variable in an annotation) is rigid: unification
+-- never binds it. A unification variable ('EffUnif') is created by inference,
+-- when a schema or a component instance is instantiated, and is the only kind
+-- unification binds. The two cannot collide, whatever names a program uses.
+--
+-- Only written variables are bound by an arrow's binder list. Generalisation
+-- turns the unification variables it quantifies into written, bound ones.
+-- ---------------------------------------------------------------------------
+
+-- | A substitution over effect variables of both kinds.
+type EffSubst = Map EffVarKey Effect
+
 -- | Substitute effect variables in an effect
-type EffSubst = Map EffVarName Effect
 substEffect :: EffSubst -> Effect -> Effect
 substEffect subst eff = case eff of
   EffNone -> EffNone
-  EffVar v -> Map.findWithDefault (EffVar v) v subst
+  EffVar v -> Map.findWithDefault (EffVar v) (Written v) subst
+  EffUnif n -> Map.findWithDefault (EffUnif n) (Unif n) subst
   EffSeq effs -> mkEffSeq (map (substEffect subst) effs)
   EffBranch e1 e2 -> EffBranch (substEffect subst e1) (substEffect subst e2)
   EffAfter d e -> EffAfter d (substEffect subst e)
@@ -560,38 +630,82 @@ substEffect subst eff = case eff of
   EffCancel lbl -> EffCancel lbl
   EffRemove lbl -> EffRemove lbl
 
--- | Generate a fresh, globally unique effect variable name using RIOApp state
-freshEffVarName :: InferenceM EffVarName
-freshEffVarName = do
+-- | Draw a fresh unification variable from the counter in 'RIOApp'.
+freshUnifVar :: InferenceM Int
+freshUnifVar = do
   ref <- asksRIO appVarCounter
-  n <- liftIO $ atomicModifyIORef' ref (\x -> (x+1, x))
-  return $ EffVarName ("e" <> fromString (show n))
+  liftIO $ atomicModifyIORef' ref (\x -> (x+1, x))
 
--- | Instantiate a schema by replacing effect variables with fresh, globally unique ones (RIO version)
+-- | Instantiate a schema: each binder becomes a fresh unification variable.
 instantiateSchema :: Type -> InferenceM Type
 instantiateSchema sch = go sch Map.empty
   where
     go t@(TArrow [] _ _ _) s =
       return (substType s t)
     go (TArrow (v:vs) i o e) s = do
-      freshVar <- freshEffVarName
-      let s' = Map.insert v (EffVar freshVar) s
+      n <- freshUnifVar
+      let s' = Map.insert (Written v) (EffUnif n) s
       go (TArrow vs i o e) s'
     go t s = return (substType s t)
 
--- | Substitute effect variables in a type (recursively)
+-- | Substitute effect variables in a type (recursively). Capture-avoiding: a
+-- variable bound by an arrow's binder list is not touched under that arrow,
+-- and a binder that would capture a variable the substitution brings in is
+-- renamed first.
 substType :: EffSubst -> Type -> Type
 substType s ty = case ty of
-  TArrow vs t1 t2 eff -> TArrow vs (substType s t1) (substType s t2) (substEffect s eff)
+  TArrow vs t1 t2 eff ->
+    let s' = List.foldl' (flip (Map.delete . Written)) s vs
+        body = TArrow [] t1 t2 eff
+        incoming = Set.unions
+          [freeEffVarsEffect e | (k, e) <- Map.toList s', k `Set.member` freeEffVarsType body]
+        clashing = [v | v <- vs, Written v `Set.member` incoming]
+    in if null clashing
+         then TArrow vs (substType s' t1) (substType s' t2) (substEffect s' eff)
+         else
+           let avoid = writtenNamesType ty <> Set.fromList [v | Written v <- toList incoming]
+               fresh = freshNames avoid clashing
+               rename = Map.fromList [(Written v, EffVar v') | (v, v') <- zip clashing fresh]
+               vs' = [Map.findWithDefault v v (Map.fromList (zip clashing fresh)) | v <- vs]
+           in substType s (TArrow vs' (substType rename t1) (substType rename t2) (substEffect rename eff))
   TPair t1 t2 -> TPair (substType s t1) (substType s t2)
   other -> other
 
+-- | Names for new written variables, one per given base name, avoiding the
+-- given set and each other. A base name is kept when it is free, and
+-- otherwise gets the first numeric suffix that is.
+freshNames :: Set EffVarName -> [EffVarName] -> [EffVarName]
+freshNames _ [] = []
+freshNames avoid (EffVarName b : bs) =
+  let candidates = EffVarName b : [EffVarName (b <> Text.pack (show k)) | k <- [1 :: Int ..]]
+      v = pick candidates
+  in v : freshNames (Set.insert v avoid) bs
+  where
+    pick (c : cs) = if c `Set.member` avoid then pick cs else c
+    pick [] = EffVarName b -- unreachable: the candidates are infinite
+
+-- | Every written variable name in a type, free or bound, binders included.
+writtenNamesType :: Type -> Set EffVarName
+writtenNamesType ty = case ty of
+  TArrow vs t1 t2 eff ->
+    Set.unions [Set.fromList vs, writtenNamesType t1, writtenNamesType t2, writtenNamesEffect eff]
+  TPair t1 t2 -> writtenNamesType t1 <> writtenNamesType t2
+  _ -> Set.empty
+  where
+    writtenNamesEffect e = Set.fromList [v | Written v <- toList (freeEffVarsEffect e)]
+
 -- | Unification for effects
 -- | When relevant: Expected effect comes first then actual effect
+--
+-- Only a unification variable is bound. A written variable is rigid: it
+-- unifies with itself, or with a unification variable, which is then bound
+-- to it.
 unifyEffect :: Effect -> Effect -> InferenceM EffSubst
 unifyEffect e1 e2 = case (e1, e2) of
-  (EffVar v, eff) -> return (Map.singleton v eff)
-  (eff, EffVar v) -> return (Map.singleton v eff)
+  (EffUnif u1, EffUnif u2) | u1 == u2 -> return Map.empty
+  (EffUnif u, eff) -> return (Map.singleton (Unif u) eff)
+  (eff, EffUnif u) -> return (Map.singleton (Unif u) eff)
+  (EffVar v1, EffVar v2) | v1 == v2 -> return Map.empty
   (EffNone, EffNone) -> return Map.empty
   (EffSeq s1, EffSeq s2) | length s1 == length s2 ->
     foldM (\subst (a, b) -> do
@@ -632,9 +746,21 @@ unifyEffect e1 e2 = case (e1, e2) of
   (EffAlways l1 a1, EffAlways l2 a2) | l1 == l2 -> unifyEffect a1 a2
   (EffEventually l1 a1, EffEventually l2 a2) | l1 == l2 -> unifyEffect a1 a2
   _ -> fail $ "Cannot unify effects: " <> fromString (show (pretty e1)) <> " and " <> fromString (show (pretty e2))
+         <> rigidNote
+  where
+    rigidNote
+      | isWritten e1 || isWritten e2 =
+          " (a written effect variable is rigid: it unifies only with itself or a unification variable)"
+      | otherwise = ""
+    isWritten (EffVar _) = True
+    isWritten _ = False
 
 -- | Strict unification for types (structure must match exactly, effects unified)
 -- | Expected type comes first then actual type
+--
+-- Two schemas unify up to renaming of their binders: both binder lists are
+-- renamed to the same fresh written variables, which are rigid, and a
+-- binding that would let one escape its schema is rejected.
 unifyType :: Type -> Type -> InferenceM EffSubst
 unifyType t1 t2 = case (t1, t2) of
   (TAny, _) -> return Map.empty
@@ -648,17 +774,30 @@ unifyType t1 t2 = case (t1, t2) of
     s1 <- unifyType a1 a2
     s2 <- unifyType (substType s1 b1) (substType s1 b2)
     return (Map.union s1 s2)
-  (TArrow vs1 a1 r1 e1, TArrow vs2 a2 r2 e2) | length vs1 == length vs2 -> do
+  (TArrow [] a1 r1 e1, TArrow [] a2 r2 e2) -> do
     s1 <- unifyType a1 a2
     s2 <- unifyType (substType s1 r1) (substType s1 r2)
     s3 <- unifyEffect (substEffect s2 (substEffect s1 e1)) (substEffect s2 (substEffect s1 e2))
     return (Map.unions [s1, s2, s3])
+  (TArrow vs1 a1 r1 e1, TArrow vs2 a2 r2 e2) | length vs1 == length vs2 -> do
+    let common = freshNames (writtenNamesType t1 <> writtenNamesType t2) vs1
+        rename vs = Map.fromList (zip (map Written vs) (map EffVar common))
+        TArrow _ a1' r1' e1' = substType (rename vs1) (TArrow [] a1 r1 e1)
+        TArrow _ a2' r2' e2' = substType (rename vs2) (TArrow [] a2 r2 e2)
+    s <- unifyType (TArrow [] a1' r1' e1') (TArrow [] a2' r2' e2')
+    let escaping = [ v | e <- Map.elems s, Written v <- toList (freeEffVarsEffect e), v `elem` common ]
+    unless (null escaping) $
+      fail $ "Type mismatch: a bound effect variable would escape its schema"
+        <> "\n  Expected " <> fromString (show (pretty t1))
+        <> " \n  Actual   " <> fromString (show (pretty t2))
+    return s
   _ -> fail $ "Type mismatch: \n  Expected " <> fromString (show (pretty t1)) <> " \n  Actual   " <> fromString (show (pretty t2))
 
 -- | Collect all free effect variables in an Effect
-freeEffVarsEffect :: Effect -> Set EffVarName
+freeEffVarsEffect :: Effect -> Set EffVarKey
 freeEffVarsEffect eff = case eff of
-  EffVar v -> Set.singleton v
+  EffVar v -> Set.singleton (Written v)
+  EffUnif n -> Set.singleton (Unif n)
   EffSeq effs -> Set.unions (map freeEffVarsEffect effs)
   EffBranch e1 e2 -> freeEffVarsEffect e1 `Set.union` freeEffVarsEffect e2
   EffAfter _ e -> freeEffVarsEffect e
@@ -672,19 +811,77 @@ freeEffVarsEffect eff = case eff of
   EffRemove _ -> Set.empty
 
 -- | Collect all free effect variables in a Type
-freeEffVarsType :: Type -> Set EffVarName
+freeEffVarsType :: Type -> Set EffVarKey
 freeEffVarsType ty = case ty of
   TArrow vs t1 t2 eff ->
-    (freeEffVarsType t1 `Set.union` freeEffVarsType t2 `Set.union` freeEffVarsEffect eff) Set.\\ Set.fromList vs
+    (freeEffVarsType t1 `Set.union` freeEffVarsType t2 `Set.union` freeEffVarsEffect eff)
+      Set.\\ Set.fromList (map Written vs)
   TPair t1 t2 -> freeEffVarsType t1 `Set.union` freeEffVarsType t2
   _ -> Set.empty
 
--- | Generalize all free effect variables in a type into a schema
--- | Wraps the type in SForall for each free effect variable (in sorted order for determinism)
-generalizeEffect :: Type -> Type
-generalizeEffect (TArrow vs i o e) =
-  let effVars = toList
-        ((freeEffVarsType i `Set.union` freeEffVarsType o `Set.union` freeEffVarsEffect e) Set.\\ Set.fromList vs)
-      sortedVars = List.sort effVars
-  in TArrow (vs ++ sortedVars) i o e
-generalizeEffect ty = ty
+-- | The effect variables free in the context: those of every type in Γ,
+-- plus the component's declared effect parameters (@scope@).
+contextFreeVars :: Set EffVarKey -> TyEnv -> Set EffVarKey
+contextFreeVars scope env = Set.unions (scope : map freeEffVarsType (Map.elems env))
+
+-- | Hindley–Milner generalisation, @gen(Γ, τ) = ∀(fev(τ) ∖ fev(Γ)). τ@, given
+-- @fev(Γ)@. A written variable keeps its name as the binder. A unification
+-- variable is replaced by a new written one (@e3@ for @?_e3@, renamed if
+-- that name is taken), since binders bind written variables only. Only an
+-- arrow carries binders, so any other type is returned unchanged.
+generalizeEffect :: Set EffVarKey -> Type -> Type
+generalizeEffect ctx ty@(TArrow vs i o e) =
+  let quantified = toList (freeEffVarsType ty Set.\\ ctx)
+      written = [v | Written v <- quantified]
+      unifs = [n | Unif n <- quantified]
+      names = freshNames (writtenNamesType ty) [EffVarName ("e" <> Text.pack (show n)) | n <- unifs]
+      s = Map.fromList (zip (map Unif unifs) (map EffVar names))
+      TArrow _ i' o' e' = substType s (TArrow [] i o e)
+  in TArrow (vs ++ written ++ names) i' o' e'
+generalizeEffect _ ty = ty
+
+-- | Check an annotated @let x : σ = e@ in the Damas–Milner way: the
+-- annotation must be an instance of the right-hand side's generalised type.
+-- σ's binders are made rigid (renamed to written variables fresh for
+-- everything in sight), the inferred schema is instantiated, and the two are
+-- unified. A unification variable of the context may not be bound to one of
+-- σ's binders, which would let it escape.
+checkAnnotation :: Text -> Set EffVarKey -> Type -> Type -> InferenceM ()
+checkAnnotation var ctx sch inferred = do
+  let (skolems, annBody) = case sch of
+        TArrow vs i o e ->
+          let avoid = writtenNamesType sch <> writtenNamesType inferred
+                <> Set.fromList [v | Written v <- toList ctx]
+              sk = freshNames avoid vs
+              rename = Map.fromList (zip (map Written vs) (map EffVar sk))
+          in (sk, substType rename (TArrow [] i o e))
+        _ -> ([], sch)
+  actual <- instantiateSchema inferred
+  s <- unifyType annBody actual `catchInference` \err ->
+    fail $ "The definition of '" <> Text.unpack var <> "' does not have its annotated type"
+      <> "\n  Annotation " <> show (pretty sch)
+      <> "\n  Inferred   " <> show (pretty inferred)
+      <> "\n  " <> Text.unpack (errorMessage err)
+  let escaping = [ v | (k, e) <- Map.toList s, k `Set.member` ctx
+                     , Written v <- toList (freeEffVarsEffect e), v `elem` skolems ]
+  unless (null escaping) $
+    fail $ "The annotation of '" <> Text.unpack var <> "' quantifies an effect variable that the context fixes"
+      <> "\n  Annotation " <> show (pretty sch)
+      <> "\n  Inferred   " <> show (pretty inferred)
+
+-- | A λ-parameter annotation, as in OCaml's @fun (f : 'a -> unit) -> …@ or a
+-- Haskell pattern signature: a written variable that no enclosing scope binds
+-- stands for whatever effect it meets, so it becomes a fresh unification
+-- variable for this λ (one per name, shared by its occurrences in the
+-- annotation). Variables the component binds stay rigid, and a @forall@
+-- inside the annotation keeps its own binders ('substType' skips them).
+flexibleParamAnnotation :: Type -> InferenceM Type
+flexibleParamAnnotation ty = do
+  scoped <- asks scopedEffVars
+  let unbound = [v | Written v <- toList (freeEffVarsType ty), v `Set.notMember` scoped]
+  fresh <- mapM (\v -> (\n -> (Written v, EffUnif n)) <$> freshUnifVar) unbound
+  pure (substType (Map.fromList fresh) ty)
+
+-- | Recover from an inference failure.
+catchInference :: InferenceM a -> (InferenceError -> InferenceM a) -> InferenceM a
+catchInference (InferenceM m) handler = InferenceM (catchE m (runInferenceM . handler))

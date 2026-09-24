@@ -68,6 +68,7 @@ prefixStateChangeVars prefix eff = case eff of
   EffSeq es -> mkEffSeq (map (prefixStateChangeVars prefix) es)
   EffBranch e1 e2 -> EffBranch (prefixStateChangeVars prefix e1) (prefixStateChangeVars prefix e2)
   EffVar v -> EffVar v  -- Effect variables don't need prefixing
+  EffUnif n -> EffUnif n
   EffEvent lbl -> EffEvent lbl
   EffAlways lbl e -> EffAlways lbl (prefixStateChangeVars prefix e)
   EffEventually lbl e -> EffEventually lbl (prefixStateChangeVars prefix e)

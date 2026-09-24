@@ -214,9 +214,9 @@ spec = do
 
         it "verifies setTimeout effect polymorphism instantiation" $ do
           let compCode = Text.unlines
-                [ "comp DelayTest() : int {"
+                [ "comp DelayTest(clk: int) : int {"
                 , "  state counter, setCounter default 0;"
-                , "  on once do {"
+                , "  on clk do {"
                 , "    setTimeout((x: unit) => { setCounter((c: int) => { c + 1 }) });"
                 , "  }"
                 , "  return counter;"
@@ -396,11 +396,11 @@ spec = do
 
         it "verifies multiple polymorphic function calls" $ do
           let compCode = Text.unlines
-                [ "comp MultiDelay() : int {"
+                [ "comp MultiDelay(clk: int) : int {"
                 , "  state x, setX default 0;"
                 , "  state y, setY default 0;"
                 , "  state result, setResult default 0;"
-                , "  on once do {"
+                , "  on clk do {"
                 , "    setTimeout((a: unit) => { setX((v: int) => { v + 1 }) });"
                 , "    setTimeout((a: unit) => { setY((v: int) => { v + 2 }) });"
                 , "  }"
@@ -422,7 +422,7 @@ spec = do
                   Map.size sigma `shouldBe` 1
                   case typedComps of
                     [(typedDecls, typedReturn)] -> do
-                      -- Should have 3 state declarations + 2 effect declarations (on once, on x)
+                      -- Should have 3 state declarations + 2 effect declarations (on clk, on x)
                       length typedDecls `shouldBe` 5
                       -- The return should be properly typed as result
                       case typedReturn of
@@ -432,9 +432,9 @@ spec = do
 
         it "rejects the removed delay builtin as an unbound variable" $ do
           let compCode = Text.unlines
-                [ "comp DelayGone() : int {"
+                [ "comp DelayGone(clk: int) : int {"
                 , "  state counter, setCounter default 0;"
-                , "  on once do {"
+                , "  on clk do {"
                 , "    delay((x: unit) => { setCounter((c: int) => { c + 1 }) });"
                 , "  }"
                 , "  return counter;"

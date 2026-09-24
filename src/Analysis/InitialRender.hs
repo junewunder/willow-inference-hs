@@ -114,6 +114,7 @@ settlingEffect = prune . simplifyEffect . go
       EffLoop x -> EffLoop x
       EffStateChange x -> EffStateChange x
       EffVar v -> EffVar v
+      EffUnif n -> EffUnif n
       EffAfter d body -> EffAfter d (go body)
       EffSeq es -> List.foldl' effSeq EffNone (map go es)
       EffBranch e1 e2 -> EffBranch (go e1) (go e2)

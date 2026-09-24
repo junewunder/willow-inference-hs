@@ -495,14 +495,16 @@ evaluation:
   generated effects: reflexivity, transitivity, and `+` as a join (each branch is below
   the choice, and the choice is the least such effect).
 
-The rest of the suite covers the parser, inference, the two analyses, and a round trip
-that pins every effect printer against the parser. Run everything:
+The rest of the suite covers the parser, inference, the two analyses, effect polymorphism
+(`EffectPolymorphismSpec`, with QuickCheck laws for instantiation, unification,
+generalisation and substitution in `EffectVariableLawsSpec`), and a round trip that pins
+every effect printer against the parser. Run everything:
 
 ```sh
 stack test
 ```
 
-Expect **200 examples, 0 failures**, in well under a second. The suite is the evidence
+Expect **234 examples, 0 failures**, in well under a second. The suite is the evidence
 for the paper's claims — a failure means the implementation or the paper is wrong, not
 that a test needs relaxing.
 
@@ -533,7 +535,8 @@ Willow prints ASCII; the paper uses glyphs.
 | `cancel ℓ⟨v⟩` | `⊘ℓ⟨v⟩` | suppress one pending firing of the event |
 | `remove ℓ⟨v⟩` | `✗ℓ⟨v⟩` | unregister the event's handlers |
 | `loop[x]` | `loop[x]` | an inter-render loop through `x` |
-| `?e` | `F` | an effect variable inference did not pin down |
+| `?F` | `F` | a written effect variable: a component's effect parameter or a `forall` binder |
+| `?_e3` | — | a unification variable: an effect inference did not pin down (it cannot be written in a program) |
 
 Time units are `r` renders, `n` network requests, `ms` milliseconds, `db` a debounce
 window, `i` intervals, `u` compute units.
@@ -545,7 +548,13 @@ the `{…}` after `after Nu`.
 
 Inference is Hindley–Milner-style, extended so that library functions (`fetch`,
 `setTimeout`, `setInterval`, …) are polymorphic in their latent effect — which is what
-lets `TextInput` above be typed once and instantiated per caller. The paper gives the
+lets `TextInput` above be typed once and instantiated per caller. As in textbook
+Hindley–Milner, written effect variables are rigid (except in a λ-parameter annotation,
+where one the component does not bind stands for whatever effect it meets, as in OCaml's
+`fun (f : 'a -> unit) -> …`), every `let` is generalised over the
+variables its context does not own, an annotated `let` must be an instance of what its
+definition infers, and each component instance gets fresh variables for its effect
+parameters. The paper gives the
 grammar (Fig. 5) and the full set of typing rules (Figs. 6–7, and Figs. 10–15 in the
 appendix).
 
