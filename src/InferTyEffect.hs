@@ -430,8 +430,40 @@ inferTyEffExprTypedM sigmaE env effEnv inputNode@(_ :< langF) = do
         let (argTy, retTy, callEff) = case tfTy of
               TArrow _ a r e -> (a, r, e)
               _ -> error "EAppF: instantiating an arrow gave a non-arrow"
-        (s2, tx) <- inferTyEffExprTypedWithExpectedM sigmaE (substEnv s1 env) effEnv (Just argTy) x
-        s3 <- unifyType (substType s2 argTy) (getType tx)
+        (s2, tx, s3) <- case argTy of
+          -- A schema parameter takes an argument the Damas–Milner way, as an
+          -- annotated let does: the argument's type is generalised, and the
+          -- parameter's schema must be an instance of it. Unifying the
+          -- schema with the argument's (instantiated or binder-free) type
+          -- would compare binder lists that cannot match.
+          TArrow (_ : _) _ _ _ -> do
+            scoped <- asks scopedEffVars
+            let env1 = substEnv s1 env
+                ctx0 = contextFreeVars (Set.map Written scoped) env1
+                (_, expected) = skolemise (Set.fromList [v | Written v <- toList ctx0]) argTy
+            (s2, tx) <- inferTyEffExprTypedWithExpectedM sigmaE env1 effEnv (Just expected) x
+            -- Besides Γ, the argument's own effect and the parameter's free
+            -- variables (the function's, instantiated) belong to the context.
+            let ctx = Set.unions
+                  [ contextFreeVars (Set.map Written scoped) (substEnv s2 env1)
+                  , freeEffVarsEffect (getEffect tx)
+                  , freeEffVarsType (substType s2 argTy)
+                  ]
+                inferred = generalizeEffect ctx (getType tx)
+            s3 <- checkInstance ctx (substType s2 argTy) inferred
+              (\err -> "The argument " <> show (pretty x) <> " is not as polymorphic as the parameter of "
+                 <> show (pretty f)
+                 <> "\n  Parameter " <> show (pretty (substType s2 argTy))
+                 <> "\n  Argument  " <> show (pretty inferred)
+                 <> "\n  " <> Text.unpack (errorMessage err))
+              ("The parameter of " <> show (pretty f) <> " quantifies an effect variable that the context fixes"
+                 <> "\n  Parameter " <> show (pretty (substType s2 argTy))
+                 <> "\n  Argument  " <> show (pretty inferred))
+            pure (s2, tx, s3)
+          _ -> do
+            (s2, tx) <- inferTyEffExprTypedWithExpectedM sigmaE (substEnv s1 env) effEnv (Just argTy) x
+            s3 <- unifyType (substType s2 argTy) (getType tx)
+            pure (s2, tx, s3)
         let s = composeSubsts [s3, s2, s1]
             appEff = substEffect s (getEffect tf) `effSeq` substEffect s (getEffect tx) `effSeq` substEffect s callEff
         return (s, mkTypedExpr span (substType s retTy) appEff (EAppF tf tx))
@@ -954,35 +986,47 @@ generalizeEffect ctx ty@(TArrow vs i o e) =
 generalizeEffect _ ty = ty
 
 -- | Check an annotated @let x : σ = e@ in the Damas–Milner way: the
--- annotation must be an instance of the right-hand side's generalised type.
--- σ's binders are made rigid (renamed to written variables fresh for
--- everything in sight), the inferred schema is instantiated, and the two are
--- unified. A unification variable of the context may not be bound to one of
--- σ's binders, which would let it escape. The unifier is returned: what it
--- says about the context's unification variables holds from here on.
+-- annotation must be an instance of the right-hand side's generalised type
+-- (see 'checkInstance').
 checkAnnotation :: Text -> Set EffVarKey -> Type -> Type -> InferenceM EffSubst
-checkAnnotation var ctx sch inferred = do
-  let (skolems, annBody) = case sch of
-        TArrow vs i o e ->
-          let avoid = writtenNamesType sch <> writtenNamesType inferred
-                <> Set.fromList [v | Written v <- toList ctx]
-              sk = freshNames avoid vs
-              rename = Map.fromList (zip (map Written vs) (map EffVar sk))
-          in (sk, substType rename (TArrow [] i o e))
-        _ -> ([], sch)
-  actual <- instantiateSchema inferred
-  s <- unifyType annBody actual `catchInference` \err ->
-    fail $ "The definition of '" <> Text.unpack var <> "' does not have its annotated type"
+checkAnnotation var ctx sch inferred =
+  checkInstance ctx sch inferred
+    (\err -> "The definition of '" <> Text.unpack var <> "' does not have its annotated type"
       <> "\n  Annotation " <> show (pretty sch)
       <> "\n  Inferred   " <> show (pretty inferred)
-      <> "\n  " <> Text.unpack (errorMessage err)
+      <> "\n  " <> Text.unpack (errorMessage err))
+    ("The annotation of '" <> Text.unpack var <> "' quantifies an effect variable that the context fixes"
+      <> "\n  Annotation " <> show (pretty sch)
+      <> "\n  Inferred   " <> show (pretty inferred))
+
+-- | Check that a schema σ is an instance of an inferred, generalised schema.
+-- σ's binders are made rigid (see 'skolemise'), the inferred schema is
+-- instantiated, and the two are unified. A unification variable of the
+-- context (@ctx@) may not be bound to one of σ's binders, which would let it
+-- escape. The unifier is returned: what it says about the context's
+-- unification variables holds from here on. The two messages are for a
+-- failed unification and for an escape.
+checkInstance :: Set EffVarKey -> Type -> Type -> (InferenceError -> String) -> String -> InferenceM EffSubst
+checkInstance ctx sch inferred mismatch escape = do
+  let (skolems, annBody) =
+        skolemise (writtenNamesType inferred <> Set.fromList [v | Written v <- toList ctx]) sch
+  actual <- instantiateSchema inferred
+  s <- unifyType annBody actual `catchInference` (fail . mismatch)
   let escaping = [ v | (k, e) <- Map.toList s, k `Set.member` ctx
                      , Written v <- toList (freeEffVarsEffect e), v `elem` skolems ]
-  unless (null escaping) $
-    fail $ "The annotation of '" <> Text.unpack var <> "' quantifies an effect variable that the context fixes"
-      <> "\n  Annotation " <> show (pretty sch)
-      <> "\n  Inferred   " <> show (pretty inferred)
+  unless (null escaping) $ fail escape
   return s
+
+-- | Strip a schema's binders, renaming them to written variables fresh for
+-- the schema and for @avoid@. Written variables are rigid, so the result
+-- stands for the schema at an arbitrary instance.
+skolemise :: Set EffVarName -> Type -> ([EffVarName], Type)
+skolemise avoid sch = case sch of
+  TArrow vs i o e ->
+    let sk = freshNames (avoid <> writtenNamesType sch) vs
+        rename = Map.fromList (zip (map Written vs) (map EffVar sk))
+    in (sk, substType rename (TArrow [] i o e))
+  _ -> ([], sch)
 
 -- | A λ-parameter annotation, read as a type annotation is in OCaml: a
 -- written variable that no enclosing scope binds stands for whatever effect it
