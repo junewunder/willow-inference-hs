@@ -11,6 +11,7 @@ module InferTyEffect
   , lookupEventPayload
   , module InferenceMonad
   , EffSubst
+  , composeSubst
   , substEffect
   , substType
   , instantiateSchema
@@ -115,7 +116,7 @@ inferTyEffComponentM sigma sigmaE compNode@(_ :< ComponentF name effParams args 
         -- component treats as parameters too (see 'DeclSubCompF').
         scoped = Set.fromList effParams
           <> Set.fromList [v | (_, t) <- args, Written v <- toList (freeEffVarsType t)]
-    (env1, effEnv1, tdecls) <- local (\ctx -> ctx {scopedEffVars = scoped}) $
+    (sDecls, env1, effEnv1, tdecls) <- local (\ctx -> ctx {scopedEffVars = scoped}) $
       inferTyEffDeclsM sigma sigmaE scope env0 effEnv0 decls
     -- Find the source location for the return variable from its declaration
     let findRetVarLocation :: Text -> [Declaration] -> Maybe SourceAnnotation
@@ -131,27 +132,32 @@ inferTyEffComponentM sigma sigmaE compNode@(_ :< ComponentF name effParams args 
                          in nAnnot :< LangFExpr (EVarF ret)
           Nothing -> mkVar Nothing ret
 
-    tret <- inferTyEffExprTypedM sigmaE env1 effEnv1 retVarNode
+    (sRet, tret) <- inferTyEffExprTypedM sigmaE env1 effEnv1 retVarNode
     let actualRetSchema = getType tret
+        retSpan = maybe span annSourceSpan retVarAnnotation
     -- Use the source context from the return variable for better error reporting
-    _ <- case retVarAnnotation of
-      Just sAnnot ->
-        withSourceContext (Just (annSourceSpan sAnnot)) (Text.pack $ "Return type of " <> Text.unpack name) $
-          unifyType retSchema actualRetSchema
-      Nothing ->
-        withSourceContext (Just span) (Text.pack $ "Return type of " <> Text.unpack name) $
-          unifyType retSchema actualRetSchema
-    let newEntry = SigmaEntry (mkComponent name effParams args tdecls ret retSchema) effEnv1
+    sAnn <- withSourceContext (Just retSpan) (Text.pack $ "Return type of " <> Text.unpack name) $
+      unifyType retSchema actualRetSchema
+    -- The component's substitution, applied once more to everything built
+    -- under an earlier, partial one: every annotation in the typed tree and
+    -- every cascade in Δ.
+    let s = composeSubsts [sAnn, sRet, sDecls]
+        tdecls' = map (substDeclaration s) tdecls
+        tret' = substNode s tret
+        effEnv' = substDelta s effEnv1
+        newEntry = SigmaEntry (mkComponent name effParams args tdecls' ret retSchema) effEnv'
         sigma' = case sigma of Sigma m -> Sigma (Map.insert name newEntry m)
-    pure ((tdecls, tret), sigma')
+    pure ((tdecls', tret'), sigma')
 
--- | Context-aware declaration list inference
-inferTyEffDeclsM :: Sigma -> SigmaE -> Set EffVarKey -> TyEnv -> Delta -> [Declaration] -> InferenceM (TyEnv, Delta, [AnnotatedDeclaration])
-inferTyEffDeclsM _ _ _ tyEnv delta [] = return (tyEnv, delta, [])
+-- | Context-aware declaration list inference. Each declaration is inferred
+-- under Γ and Δ with the substitution so far already applied, and the
+-- declarations' substitutions are composed.
+inferTyEffDeclsM :: Sigma -> SigmaE -> Set EffVarKey -> TyEnv -> Delta -> [Declaration] -> InferenceM (EffSubst, TyEnv, Delta, [AnnotatedDeclaration])
+inferTyEffDeclsM _ _ _ tyEnv delta [] = return (Map.empty, tyEnv, delta, [])
 inferTyEffDeclsM sigma sigmaE scope tyEnv delta (d : ds) = do
-  (tyEnv', delta', texpr) <- inferTyEffDeclM sigma sigmaE scope tyEnv delta d
-  (tyEnv'', delta'', texprs) <- inferTyEffDeclsM sigma sigmaE scope tyEnv' delta' ds
-  return (tyEnv'', delta'', texpr : texprs)
+  (s1, tyEnv', delta', texpr) <- inferTyEffDeclM sigma sigmaE scope tyEnv delta d
+  (s2, tyEnv'', delta'', texprs) <- inferTyEffDeclsM sigma sigmaE scope tyEnv' delta' ds
+  return (composeSubst s2 s1, tyEnv'', delta'', texpr : texprs)
 
 -- | Enforce the paper's purity premises
 -- — T-STATE-DECL's @Γ ⊢ e : τ ∣ ·@ on the default expression and
@@ -199,20 +205,23 @@ enforcePureLetRHS var eff =
 -- | Context-aware declaration inference. @scope@ holds the component's
 -- declared effect parameters, which are part of the context for
 -- generalisation (see 'contextFreeVars').
-inferTyEffDeclM :: Sigma -> SigmaE -> Set EffVarKey -> TyEnv -> Delta -> Declaration -> InferenceM (TyEnv, Delta, AnnotatedDeclaration)
+--
+-- Returns the declaration's substitution θ together with Γ′ and Δ′, which
+-- are already under θ, as Algorithm W returns θΓ.
+inferTyEffDeclM :: Sigma -> SigmaE -> Set EffVarKey -> TyEnv -> Delta -> Declaration -> InferenceM (EffSubst, TyEnv, Delta, AnnotatedDeclaration)
 inferTyEffDeclM (Sigma sigma) sigmaE scope tyEnv effEnv declNode@(_ :< declF) = do
   let span = getDeclarationSpan declNode
       declText = Text.pack (show (pretty declNode))
   withSourceContext (Just span) declText $ case declF of
     DeclStateF var setter expr -> do
-      texpr <- inferTyEffExprTypedM sigmaE tyEnv effEnv expr
+      (s, texpr) <- inferTyEffExprTypedM sigmaE tyEnv effEnv expr
       -- T-STATE-DECL purity premise: the default must be pure.
       enforcePureStateDefault var (getEffect texpr)
       let ty = getType texpr
           setterTy = TArrow [] (TArrow [] ty ty EffNone) TUnit (EffAfter (Time 1 Renders) (EffStateChange var))
-          env' = Map.insert var ty $ Map.insert setter setterTy tyEnv
-          effEnv' = Delta (Map.insert var (DeltaEntry [] EffNone) (unDelta effEnv))
-      pure (env', effEnv', SourceAnnotation span :< DeclStateF var setter texpr)
+          env' = Map.insert var ty $ Map.insert setter setterTy (substEnv s tyEnv)
+          effEnv' = Delta (Map.insert var (DeltaEntry [] EffNone) (unDelta (substDelta s effEnv)))
+      pure (s, env', effEnv', SourceAnnotation span :< DeclStateF var setter texpr)
     DeclEffectF deps (Block exprs) -> do
       -- T-ON-DECL: each watched name must have a Δ entry. Without this
       -- check an unknown name is skipped by the update below and the block's
@@ -221,40 +230,46 @@ inferTyEffDeclM (Sigma sigma) sigmaE scope tyEnv effEnv declNode@(_ :< declF) = 
         fail $ if Map.member x tyEnv
           then "Cannot watch " <> Text.unpack x <> " in `on`: it is not an argument, state variable, let or instance"
           else "Variable not in scope: " <> Text.unpack x
-      texprs <- mapM (inferTyEffExprTypedM sigmaE tyEnv effEnv) exprs
-      let blockEffects = map getEffect texprs
+      (s, texprs) <- inferTyEffExprsM sigmaE tyEnv effEnv exprs
+      let blockEffects = map (substEffect s . getEffect) texprs
           combinedEffect = seqMany blockEffects
           f casc x = Map.update (\(DeltaEntry d e) -> Just $ DeltaEntry d (effSeq e combinedEffect)) x casc
-          effEnv' = List.foldl f (unDelta effEnv) deps
-      pure (tyEnv, Delta effEnv', SourceAnnotation span :< DeclEffectF deps (Block texprs))
+          effEnv' = List.foldl f (unDelta (substDelta s effEnv)) deps
+      pure (s, substEnv s tyEnv, Delta effEnv', SourceAnnotation span :< DeclEffectF deps (Block texprs))
     -- Both kinds of let are generalised, as in Hindley–Milner: the purity
     -- premise already makes the right-hand side a value-like expression, so
-    -- no value restriction is needed.
+    -- no value restriction is needed. Generalisation sees Γ under the
+    -- right-hand side's substitution, so a variable the right-hand side has
+    -- tied to the context is not quantified.
     DeclLetF var (Just sch) expr -> do
-      texpr <- inferTyEffExprTypedM sigmaE tyEnv effEnv expr
+      (s1, texpr) <- inferTyEffExprTypedM sigmaE tyEnv effEnv expr
       -- T-LET-DECL purity premise: before env/effEnv updates AND
       -- before the check against the annotation (see the placement contract
       -- on 'enforcePureStateDefault').
       enforcePureLetRHS var (getEffect texpr)
-      let ctx = contextFreeVars scope tyEnv
+      let ctx = contextFreeVars scope (substEnv s1 tyEnv)
           inferred = generalizeEffect ctx (getType texpr)
-      checkAnnotation var ctx sch inferred
+      -- What the annotation fixes about the context is kept, like any
+      -- other unifier.
+      s2 <- checkAnnotation var ctx sch inferred
+      let s = composeSubst s2 s1
       -- The declared type is the binding's type.
-      let env' = Map.insert var sch tyEnv
+          env' = Map.insert var sch (substEnv s tyEnv)
           deps = toList $ freeVars expr
           newEntry = DeltaEntry deps EffNone
-          effEnv' = Delta (Map.insert var newEntry (unDelta effEnv))
-      pure (env', effEnv', SourceAnnotation span :< DeclLetF var (Just sch) texpr)
+          effEnv' = Delta (Map.insert var newEntry (unDelta (substDelta s effEnv)))
+      pure (s, env', effEnv', SourceAnnotation span :< DeclLetF var (Just sch) texpr)
     DeclLetF var Nothing expr -> do
-      texpr <- inferTyEffExprTypedM sigmaE tyEnv effEnv expr
+      (s, texpr) <- inferTyEffExprTypedM sigmaE tyEnv effEnv expr
       -- T-LET-DECL purity premise.
       enforcePureLetRHS var (getEffect texpr)
-      let ty = generalizeEffect (contextFreeVars scope tyEnv) (getType texpr)
-          env' = Map.insert var ty tyEnv
+      let env1 = substEnv s tyEnv
+          ty = generalizeEffect (contextFreeVars scope env1) (getType texpr)
+          env' = Map.insert var ty env1
           deps = toList $ freeVars expr
           newEntry = DeltaEntry deps EffNone
-          effEnv' = Delta (Map.insert var newEntry (unDelta effEnv))
-      pure (env', effEnv', SourceAnnotation span :< DeclLetF var Nothing texpr)
+          effEnv' = Delta (Map.insert var newEntry (unDelta (substDelta s effEnv)))
+      pure (s, env', effEnv', SourceAnnotation span :< DeclLetF var Nothing texpr)
     (DeclSubCompF instName compName effAnnots argNames) -> do
       case Map.lookup compName sigma of
         Just (SigmaEntry (_ :< subComp) (Delta subCompDelta0)) -> do
@@ -274,35 +289,44 @@ inferTyEffDeclM (Sigma sigma) sigmaE scope tyEnv effEnv declNode@(_ :< declF) = 
           renaming <- Map.fromList <$> mapM (\k -> (\n -> (k, EffUnif n)) <$> freshUnifVar) (toList interfaceVars)
           let args = [(n, substType renaming t) | (n, t) <- args0]
               retTy = substType renaming retTy0
-              subCompDelta = Map.map (substDeltaEntry renaming) subCompDelta0
+              subCompDelta = unDelta (substDelta renaming (Delta subCompDelta0))
               effParams' = map (\p -> Map.findWithDefault (EffVar p) (Written p) renaming) effParams
 
-          -- Validate and build substitutions
+          -- Validate and build substitutions. The explicit effect
+          -- arguments are the first substitution; each argument's unifier
+          -- is composed onto it in turn.
           validateArgumentCount args compName
-          effSubst <- buildEffectSubstitution effParams'
-          unificationSubst <- validateArgumentTypes args tyEnv effSubst
-          let finalSubst = Map.union unificationSubst effSubst
+          effSubst <- buildEffectSubstitution compName effParams'
+          finalSubst <- validateArgumentTypes args tyEnv effSubst
 
           -- Apply substitutions and build environment
           let env' = buildTypeEnvironment retTy args tyEnv
               effEnv' = buildEffectEnvironment retName args subCompDelta effEnv
-              env'' = Map.map (substType finalSubst) env'
-              effEnv'' = Map.map (substDeltaEntry finalSubst) effEnv'
+              env'' = substEnv finalSubst env'
+              Delta effEnv'' = substDelta finalSubst (Delta effEnv')
 
-          return (env'', Delta effEnv'', SourceAnnotation span :< declF)
+          return (finalSubst, env'', Delta effEnv'', SourceAnnotation span :< declF)
         _ -> fail $ "Component " <> Text.unpack compName <> " not found in environment"
       where
         validateArgumentCount args compName =
           when (length args /= length argNames) $
             fail $ "Component " <> Text.unpack compName <> " expects " <> show (length args) <> " arguments, got " <> show (length argNames)
 
-        buildEffectSubstitution effParams = do
-          let effsList = fromMaybe (replicate (length effParams) Nothing) effAnnots
+        -- @A⟨F̂⟩@ must give one effect argument (or @?@) per effect
+        -- parameter; with no @⟨…⟩@ at all, every parameter is inferred.
+        buildEffectSubstitution compName effParams = do
+          effsList <- case effAnnots of
+            Nothing -> pure (replicate (length effParams) Nothing)
+            Just es
+              | length es == length effParams -> pure es
+              | otherwise ->
+                  fail $ "Component " <> Text.unpack compName <> " takes " <> show (length effParams)
+                    <> " effect argument(s), got " <> show (length es)
           return $ Map.fromList [(Unif u, effVal) | (EffUnif u, Just effVal) <- zip effParams effsList]
 
         validateArgumentTypes args env effSubst = do
           let argPairs = zip argNames (map snd args)
-          foldM validateSingleArgument Map.empty argPairs
+          foldM validateSingleArgument effSubst argPairs
           where
             validateSingleArgument subst (argName, expectedTy) =
               case Map.lookup argName env of
@@ -312,15 +336,12 @@ inferTyEffDeclM (Sigma sigma) sigmaE scope tyEnv effEnv declNode@(_ :< declF) = 
                   -- is itself a schema, which the argument's schema must
                   -- then match up to renaming (see 'unifyType').
                   actualTy <- case expectedTy of
-                    TArrow (_ : _) _ _ _ -> pure actualSch
-                    _ -> instantiateSchema actualSch
-                  let expectedTy' = substType effSubst (substType subst expectedTy)
-                  s <- unifyType expectedTy' actualTy
-                  return (Map.union subst s)
+                    TArrow (_ : _) _ _ _ -> pure (substType subst actualSch)
+                    _ -> instantiateSchema (substType subst actualSch)
+                  s <- unifyType (substType subst expectedTy) actualTy
+                  return (composeSubst s subst)
                 Nothing ->
                   fail $ "Argument " <> Text.unpack argName <> " not in scope for subcomponent " <> Text.unpack instName
-
-        substDeltaEntry subst (DeltaEntry deps eff) = DeltaEntry deps (substEffect subst eff)
 
         buildTypeEnvironment retTy args env =
           let retTy' = prefixStateChangeVarsTy instName retTy
@@ -355,150 +376,177 @@ inferTyEffDeclM (Sigma sigma) sigmaE scope tyEnv effEnv declNode@(_ :< declF) = 
 
         prefixName name = instName <> Text.pack "." <> name
 
--- | Context-aware inference for expressions
-inferTyEffExprTypedM :: SigmaE -> TyEnv -> Delta -> AnnotatedNode -> InferenceM AnnotatedNode
+-- | Context-aware inference for expressions: Algorithm W. Returns the
+-- substitution θ the expression's unifications produced, and the typed
+-- node, whose own type and effect are under θ. Subterms are inferred left to
+-- right, each under Γ with the substitution so far applied, and the effects
+-- already built are brought under the final θ before they are combined.
+-- Annotations inside the tree may lag behind: the component applies its final
+-- substitution to the whole tree (see 'substNode').
+inferTyEffExprTypedM :: SigmaE -> TyEnv -> Delta -> AnnotatedNode -> InferenceM (EffSubst, AnnotatedNode)
 inferTyEffExprTypedM sigmaE env effEnv inputNode@(_ :< langF) = do
   -- Update context with current node information
   let span = getNodeSpan inputNode
       exprText = Text.pack (show (pretty inputNode))
+      noSubst node = return (Map.empty, node)
   withSourceContext (Just span) exprText $ case langF of
     LangFExpr exprF -> case exprF of
       EVarF x ->
         case Map.lookup x env of
           Just ty -> do
             instantiatedTy <- instantiateSchema ty
-            return $ NodeAnnotation span instantiatedTy EffNone :< LangFExpr (EVarF x)
+            noSubst $ NodeAnnotation span instantiatedTy EffNone :< LangFExpr (EVarF x)
           Nothing -> fail $ "Variable not in scope: " <> Text.unpack x
-      ELitIntF n -> return $ mkSimpleTypedExpr span TInt (ELitIntF n)
-      ELitStringF s -> return $ mkSimpleTypedExpr span TString (ELitStringF s)
-      ELitBoolF b -> return $ mkSimpleTypedExpr span TBool (ELitBoolF b)
+      ELitIntF n -> noSubst $ mkSimpleTypedExpr span TInt (ELitIntF n)
+      ELitStringF s -> noSubst $ mkSimpleTypedExpr span TString (ELitStringF s)
+      ELitBoolF b -> noSubst $ mkSimpleTypedExpr span TBool (ELitBoolF b)
       EJSXNodeF node -> do
-        tnode <- inferTyEffJSXNodeTypedM sigmaE env effEnv node
-        return $ mkTypedExpr span THtml (getEffect tnode) (EJSXNodeF tnode)
+        (s, tnode) <- inferTyEffJSXNodeTypedM sigmaE env effEnv node
+        return (s, mkTypedExpr span THtml (getEffect tnode) (EJSXNodeF tnode))
       EArrowF vs param mTy body -> do
         paramTy <- maybe (pure TAny) flexibleParamAnnotation mTy
         let env' = Map.insert param paramTy env
-        tbody <- inferTyEffExprTypedM sigmaE env' effEnv body
+        (s, tbody) <- inferTyEffExprTypedM sigmaE env' effEnv body
         let bodyTy = getType tbody
             bodyEff = getEffect tbody
-        return $ mkSimpleTypedExpr span
-          (TArrow vs paramTy (ensureMono bodyTy) bodyEff)
-          (EArrowF vs param mTy tbody)
+        return (s, mkSimpleTypedExpr span
+          (TArrow vs (substType s paramTy) (ensureMono bodyTy) bodyEff)
+          (EArrowF vs param mTy tbody))
 
       EAppF f x -> do
-        tf <- inferTyEffExprTypedM sigmaE env effEnv f
-        let tfSch = getType tf
-        let tfEff = getEffect tf
-        tfTy <- case tfSch of
-              TArrow {} -> instantiateSchema tfSch
-              _ -> fail ""
-        case tfTy of
-          TArrow _ argTy retTy callEff -> do
-            tx <- inferTyEffExprTypedWithExpectedM sigmaE env effEnv (Just argTy) x
-            let txSch = getType tx
-                txTy = txSch
-                txEff = getEffect tx
-            subst <- unifyType argTy txTy
-            let retTy' = substType subst retTy
-                callEff' = substEffect subst callEff
-                appEff = tfEff `effSeq` txEff `effSeq` callEff'
-            return $ mkTypedExpr span retTy' appEff (EAppF tf tx)
-          _ -> fail "Type error: applying non-function"
+        (s1, tf) <- inferTyEffExprTypedM sigmaE env effEnv f
+        tfTy <- case getType tf of
+          tfSch@(TArrow {}) -> instantiateSchema tfSch
+          TAny ->
+            fail $ "Cannot apply " <> show (pretty f) <> ": its type is any"
+              <> " (an unannotated λ parameter, or null), which is not known to be a function."
+              <> " Annotate it with a function type."
+          other ->
+            fail $ "Type error: applying " <> show (pretty f) <> ", which is not a function: it has type "
+              <> show (pretty other)
+        let (argTy, retTy, callEff) = case tfTy of
+              TArrow _ a r e -> (a, r, e)
+              _ -> error "EAppF: instantiating an arrow gave a non-arrow"
+        (s2, tx) <- inferTyEffExprTypedWithExpectedM sigmaE (substEnv s1 env) effEnv (Just argTy) x
+        s3 <- unifyType (substType s2 argTy) (getType tx)
+        let s = composeSubsts [s3, s2, s1]
+            appEff = substEffect s (getEffect tf) `effSeq` substEffect s (getEffect tx) `effSeq` substEffect s callEff
+        return (s, mkTypedExpr span (substType s retTy) appEff (EAppF tf tx))
       EIfF cond bThen bElse -> do
-        tCond <- inferTyEffExprTypedM sigmaE env effEnv cond
-        tThen <- inferTyEffExprTypedM sigmaE env effEnv bThen
-        tElse <- inferTyEffExprTypedM sigmaE env effEnv bElse
-        condSubst <- unifyType TBool (getType tCond)
-        branchSubst <- unifyType (getType tThen) (getType tElse)
-        let finalSubst = Map.union condSubst branchSubst
-            resultSch = substType finalSubst (getType tThen)
-            condEff' = substEffect finalSubst (getEffect tCond)
-            thenEff' = substEffect finalSubst (getEffect tThen)
-            elseEff' = substEffect finalSubst (getEffect tElse)
+        (s1, tCond) <- inferTyEffExprTypedM sigmaE env effEnv cond
+        (s2, tThen) <- inferTyEffExprTypedM sigmaE (substEnv s1 env) effEnv bThen
+        let s12 = composeSubst s2 s1
+        (s3, tElse) <- inferTyEffExprTypedM sigmaE (substEnv s12 env) effEnv bElse
+        let s123 = composeSubst s3 s12
+        condSubst <- unifyType TBool (substType s123 (getType tCond))
+        let s1234 = composeSubst condSubst s123
+        branchSubst <- unifyType (substType s1234 (getType tThen)) (substType s1234 (getType tElse))
+        let s = composeSubst branchSubst s1234
+            resultSch = substType s (getType tThen)
+            condEff' = substEffect s (getEffect tCond)
+            thenEff' = substEffect s (getEffect tThen)
+            elseEff' = substEffect s (getEffect tElse)
             eff = effSeq condEff' (EffBranch thenEff' elseEff')
-        return $ mkTypedExpr span resultSch eff (EIfF tCond tThen tElse)
-      EEffectF eff -> return $ mkTypedExpr span TUnit eff (EEffectF eff)
+        return (s, mkTypedExpr span resultSch eff (EIfF tCond tThen tElse))
+      EEffectF eff -> noSubst $ mkTypedExpr span TUnit eff (EEffectF eff)
       EPairF e1 e2 -> do
-        te1 <- inferTyEffExprTypedM sigmaE env effEnv e1
-        te2 <- inferTyEffExprTypedM sigmaE env effEnv e2
-        let eff = effSeq (getEffect te1) (getEffect te2)
-        let pairTy = TPair (getType te1) (getType te2)
-        return $ mkTypedExpr span pairTy eff (EPairF te1 te2)
+        (s, tes) <- inferTyEffExprsM sigmaE env effEnv [e1, e2]
+        let (te1, te2) = case tes of
+              [a, b] -> (a, b)
+              _ -> error "EPairF: two components inferred as a different number"
+            eff = effSeq (substEffect s (getEffect te1)) (substEffect s (getEffect te2))
+            pairTy = TPair (substType s (getType te1)) (substType s (getType te2))
+        return (s, mkTypedExpr span pairTy eff (EPairF te1 te2))
       EPairAccessF e ix -> do
-        te <- inferTyEffExprTypedM sigmaE env effEnv e
+        (s, te) <- inferTyEffExprTypedM sigmaE env effEnv e
         case getType te of
           TPair t0 t1 ->
             let resultTy = if ix == 0 then t0 else t1
-            in return $ mkTypedExpr span resultTy (getEffect te) (EPairAccessF te ix)
+            in return (s, mkTypedExpr span resultTy (getEffect te) (EPairAccessF te ix))
           _ -> fail "Type error: pair access on non-pair"
       -- T-CANCEL (paper TY CANCEL): cancel ℓ⟨v⟩ : unit ∣ ⊘ℓ⟨v⟩. Strict: the
       -- label must be declared in Σ_E.
       ECancelF lbl -> do
         _ <- lookupEventPayload sigmaE lbl
-        return $ mkTypedExpr span TUnit (EffCancel lbl) (ECancelF lbl)
+        noSubst $ mkTypedExpr span TUnit (EffCancel lbl) (ECancelF lbl)
       -- T-REMOVE (paper TY REMOVE): remove ℓ⟨v⟩ : unit ∣ ✗ℓ⟨v⟩.
       ERemoveF lbl -> do
         _ <- lookupEventPayload sigmaE lbl
-        return $ mkTypedExpr span TUnit (EffRemove lbl) (ERemoveF lbl)
+        noSubst $ mkTypedExpr span TUnit (EffRemove lbl) (ERemoveF lbl)
       -- T-BIND (paper TY BIND): bind ℓ⟨v⟩ e : unit ∣ F_e * □ℓ⟨v⟩(F), where the
       -- handler e must be a closure (τ → unit | F) with τ = Σ_E(ℓ⟨v⟩).
       EBindF lbl e -> do
-        payload <- lookupEventPayload sigmaE lbl
-        -- WithExpected pushes the payload type into UNANNOTATED inline lambdas
-        -- (EArrowF defaults param to TAny otherwise, which would satisfy the
-        -- paper's τ = Σ_E(ℓ⟨v⟩) premise vacuously); annotated handlers fall
-        -- through to plain inference. Mirrors EAppF's argument discipline.
-        te <- inferTyEffExprTypedWithExpectedM sigmaE env effEnv (Just (TArrow [] payload TUnit EffNone)) e
-        -- Mirror EAppF's instantiation discipline: instantiate schemas.
-        teFnTy <- case getType te of
-          sch@(TArrow {}) -> instantiateSchema sch
-          _ -> fail "bind expects a function (τ → unit | F)"
-        case teFnTy of
-          TArrow _ argTy retTy latent -> do
-            sArg <- unifyType argTy payload
-            sRet <- unifyType retTy TUnit
-            let subst = Map.union sArg sRet
-                eff = effSeq (substEffect subst (getEffect te)) (EffAlways lbl (substEffect subst latent))
-            return $ mkTypedExpr span TUnit eff (EBindF lbl te)
-          _ -> fail "bind expects a function (τ → unit | F)"
+        (s, te, latent) <- inferListener "bind" lbl e
+        let eff = effSeq (getEffect te) (EffAlways lbl latent)
+        return (s, mkTypedExpr span TUnit eff (EBindF lbl te))
       -- T-ONCE (paper TY ONCE): as T-BIND, but a one-shot listener → ◇ℓ⟨v⟩(F).
       EOnceF lbl e -> do
-        payload <- lookupEventPayload sigmaE lbl
-        -- See EBindF: WithExpected so unannotated handlers receive the payload type.
-        te <- inferTyEffExprTypedWithExpectedM sigmaE env effEnv (Just (TArrow [] payload TUnit EffNone)) e
-        teFnTy <- case getType te of
-          sch@(TArrow {}) -> instantiateSchema sch
-          _ -> fail "once expects a function (τ → unit | F)"
-        case teFnTy of
-          TArrow _ argTy retTy latent -> do
-            sArg <- unifyType argTy payload
-            sRet <- unifyType retTy TUnit
-            let subst = Map.union sArg sRet
-                eff = effSeq (substEffect subst (getEffect te)) (EffEventually lbl (substEffect subst latent))
-            return $ mkTypedExpr span TUnit eff (EOnceF lbl te)
-          _ -> fail "once expects a function (τ → unit | F)"
+        (s, te, latent) <- inferListener "once" lbl e
+        let eff = effSeq (getEffect te) (EffEventually lbl latent)
+        return (s, mkTypedExpr span TUnit eff (EOnceF lbl te))
     -- JSX has one inference path, in 'inferTyEffJSXNodeTypedM'. Do not inline a
     -- second copy here: the effect a node propagates is what T-LET-DECL's
     -- purity premise checks, and two copies drift.
     LangFJSXNode _ -> inferTyEffJSXNodeTypedM sigmaE env effEnv inputNode
     LangFJSXChild _ -> inferTyEffJSXNodeTypedM sigmaE env effEnv inputNode
+  where
+    -- The handler of a @bind@ or @once@: its substitution, the typed handler
+    -- with its effect under that substitution, and its latent effect.
+    inferListener :: String -> EventLabel -> AnnotatedNode -> InferenceM (EffSubst, AnnotatedNode, Effect)
+    inferListener kw lbl e = do
+      payload <- lookupEventPayload sigmaE lbl
+      -- WithExpected pushes the payload type into UNANNOTATED inline lambdas
+      -- (EArrowF defaults param to TAny otherwise, which would satisfy the
+      -- paper's τ = Σ_E(ℓ⟨v⟩) premise vacuously); annotated handlers fall
+      -- through to plain inference. Mirrors EAppF's argument discipline.
+      (s1, te) <- inferTyEffExprTypedWithExpectedM sigmaE env effEnv (Just (TArrow [] payload TUnit EffNone)) e
+      -- Mirror EAppF's instantiation discipline: instantiate schemas.
+      teFnTy <- case getType te of
+        sch@(TArrow {}) -> instantiateSchema sch
+        _ -> fail $ kw <> " expects a function (τ → unit | F)"
+      case teFnTy of
+        TArrow _ argTy retTy latent -> do
+          s2 <- unifyType argTy payload
+          s3 <- unifyType (substType s2 retTy) TUnit
+          let s = composeSubsts [s3, s2, s1]
+              te' = substNode s te
+          return (s, te', substEffect s latent)
+        _ -> fail $ kw <> " expects a function (τ → unit | F)"
 
--- | Type inference for JSX attributes, handling expressions in attribute values
-inferTyEffJSXAttrsM :: SigmaE -> TyEnv -> Delta -> [JSXAttr] -> InferenceM [JSXAttr]
-inferTyEffJSXAttrsM sigmaE env effEnv = mapM (inferTyEffJSXAttrM sigmaE env effEnv)
+-- | Infer a list of expressions left to right, threading the substitution:
+-- each is inferred under Γ with the substitution so far applied. The
+-- expressions' own types and effects are under their own substitutions only;
+-- apply the returned one to bring them up to date.
+inferTyEffExprsM :: SigmaE -> TyEnv -> Delta -> [AnnotatedNode] -> InferenceM (EffSubst, [AnnotatedNode])
+inferTyEffExprsM sigmaE env effEnv = go Map.empty []
+  where
+    go s acc [] = return (s, reverse acc)
+    go s acc (e : es) = do
+      (s', te) <- inferTyEffExprTypedM sigmaE (substEnv s env) effEnv e
+      go (composeSubst s' s) (te : acc) es
+
+-- | Type inference for JSX attributes, handling expressions in attribute
+-- values, left to right as 'inferTyEffExprsM' does.
+inferTyEffJSXAttrsM :: SigmaE -> TyEnv -> Delta -> [JSXAttr] -> InferenceM (EffSubst, [JSXAttr])
+inferTyEffJSXAttrsM sigmaE env effEnv = go Map.empty []
+  where
+    go s acc [] = return (s, reverse acc)
+    go s acc (a : as) = do
+      (s', ta) <- inferTyEffJSXAttrM sigmaE (substEnv s env) effEnv a
+      go (composeSubst s' s) (ta : acc) as
 
 -- | Type inference for a single JSX attribute
-inferTyEffJSXAttrM :: SigmaE -> TyEnv -> Delta -> JSXAttr -> InferenceM JSXAttr
+inferTyEffJSXAttrM :: SigmaE -> TyEnv -> Delta -> JSXAttr -> InferenceM (EffSubst, JSXAttr)
 inferTyEffJSXAttrM sigmaE env effEnv (JSXAttr (name, value)) = case value of
-  JSXAttrString text -> return $ JSXAttr (name, JSXAttrString text)
+  JSXAttrString text -> return (Map.empty, JSXAttr (name, JSXAttrString text))
   -- A JSX attribute is an ordinary expression: listeners are registered with
   -- @bind@/@once@, never by an attribute, so no attribute name is special.
   JSXAttrExpr expr -> do
-    typedExpr <- inferTyEffExprTypedM sigmaE env effEnv expr
-    return $ JSXAttr (name, JSXAttrExpr typedExpr)
+    (s, typedExpr) <- inferTyEffExprTypedM sigmaE env effEnv expr
+    return (s, JSXAttr (name, JSXAttrExpr typedExpr))
 
 -- | Context-aware inference for expressions with expected type
-inferTyEffExprTypedWithExpectedM :: SigmaE -> TyEnv -> Delta -> Maybe Type -> AnnotatedNode -> InferenceM AnnotatedNode
+inferTyEffExprTypedWithExpectedM :: SigmaE -> TyEnv -> Delta -> Maybe Type -> AnnotatedNode -> InferenceM (EffSubst, AnnotatedNode)
 inferTyEffExprTypedWithExpectedM sigmaE env effEnv mExpected inputNode@(_ :< langF) =
   let span = getNodeSpan inputNode
       exprText = Text.pack (show (pretty inputNode))
@@ -506,10 +554,10 @@ inferTyEffExprTypedWithExpectedM sigmaE env effEnv mExpected inputNode@(_ :< lan
     LangFExpr (EArrowF vs param Nothing body) -> case mExpected of
       Just (TArrow vs' argTy _ _) | length vs == length vs' -> do
         let env' = Map.insert param argTy env
-        tbody <- inferTyEffExprTypedM sigmaE env' effEnv body
+        (s, tbody) <- inferTyEffExprTypedM sigmaE env' effEnv body
         let bodyTy = getType tbody
         let bodyEff = getEffect tbody
-        return $ mkSimpleTypedExpr span (TArrow vs argTy (ensureMono bodyTy) bodyEff) (EArrowF vs param Nothing tbody)
+        return (s, mkSimpleTypedExpr span (TArrow vs (substType s argTy) (ensureMono bodyTy) bodyEff) (EArrowF vs param Nothing tbody))
       _ ->
         -- Fallback to regular inference if no expected type or wrong expected type
         inferTyEffExprTypedM sigmaE env effEnv inputNode
@@ -526,30 +574,31 @@ inferTyEffExprTypedWithExpectedM sigmaE env effEnv mExpected inputNode@(_ :< lan
 -- @return e@ desugars to @let returnVar = e@). T-LET-DECL's purity premise is
 -- therefore what rejects an effectful expression inside JSX, and it can only do
 -- that if the effect reaches it.
-inferTyEffJSXNodeTypedM :: SigmaE -> TyEnv -> Delta -> AnnotatedNode -> InferenceM AnnotatedNode
+inferTyEffJSXNodeTypedM :: SigmaE -> TyEnv -> Delta -> AnnotatedNode -> InferenceM (EffSubst, AnnotatedNode)
 inferTyEffJSXNodeTypedM sigmaE env effEnv node@(_ :< langF) = do
   let span = getNodeSpan node
       typedNode eff = (NodeAnnotation span THtml eff :<)
   withSourceContext (Just span) (Text.pack $ show $ pretty node) $ case langF of
     LangFJSXNode jsxF -> case jsxF of
       JSXElementNodeF tag attrs children -> do
-        tChildren <- mapM (inferTyEffExprTypedM sigmaE env effEnv) children
-        tAttrs <- inferTyEffJSXAttrsM sigmaE env effEnv attrs
-        let eff = seqMany (jsxAttrEffects tAttrs ++ map getEffect tChildren)
-        return $ typedNode eff (LangFJSXNode (JSXElementNodeF tag tAttrs tChildren))
+        (s1, tChildren) <- inferTyEffExprsM sigmaE env effEnv children
+        (s2, tAttrs) <- inferTyEffJSXAttrsM sigmaE (substEnv s1 env) effEnv attrs
+        let s = composeSubst s2 s1
+            eff = seqMany (map (substEffect s) (jsxAttrEffects tAttrs ++ map getEffect tChildren))
+        return (s, typedNode eff (LangFJSXNode (JSXElementNodeF tag tAttrs tChildren)))
       JSXSelfClosingNodeF tag attrs -> do
-        tAttrs <- inferTyEffJSXAttrsM sigmaE env effEnv attrs
-        let eff = seqMany (jsxAttrEffects tAttrs)
-        return $ typedNode eff (LangFJSXNode (JSXSelfClosingNodeF tag tAttrs))
+        (s, tAttrs) <- inferTyEffJSXAttrsM sigmaE env effEnv attrs
+        let eff = seqMany (map (substEffect s) (jsxAttrEffects tAttrs))
+        return (s, typedNode eff (LangFJSXNode (JSXSelfClosingNodeF tag tAttrs)))
     LangFJSXChild childF -> case childF of
       ChildTextF text ->
-        return $ typedNode EffNone (LangFJSXChild (ChildTextF text))
+        return (Map.empty, typedNode EffNone (LangFJSXChild (ChildTextF text)))
       ChildExprF expr -> do
-        texpr <- inferTyEffExprTypedM sigmaE env effEnv expr
-        return $ typedNode (getEffect texpr) (LangFJSXChild (ChildExprF texpr))
+        (s, texpr) <- inferTyEffExprTypedM sigmaE env effEnv expr
+        return (s, typedNode (getEffect texpr) (LangFJSXChild (ChildExprF texpr)))
       ChildNodeF childNode -> do
-        tnode <- inferTyEffExprTypedM sigmaE env effEnv childNode
-        return $ typedNode (getEffect tnode) (LangFJSXChild (ChildNodeF tnode))
+        (s, tnode) <- inferTyEffExprTypedM sigmaE env effEnv childNode
+        return (s, typedNode (getEffect tnode) (LangFJSXChild (ChildNodeF tnode)))
     _ ->
       -- For non-JSX nodes, delegate to regular expression inference
       inferTyEffExprTypedM sigmaE env effEnv node
@@ -630,6 +679,59 @@ substEffect subst eff = case eff of
   EffCancel lbl -> EffCancel lbl
   EffRemove lbl -> EffRemove lbl
 
+-- | Composition of substitutions: @composeSubst s2 s1@ applies @s1@ first,
+-- then @s2@, so @substEffect (composeSubst s2 s1) = substEffect s2 .
+-- substEffect s1@. Where both bind a variable, @s1@'s binding (under @s2@)
+-- is the one that counts; inference never produces that case, since @s2@ is
+-- always computed on terms @s1@ has already been applied to.
+composeSubst :: EffSubst -> EffSubst -> EffSubst
+composeSubst s2 s1
+  | Map.null s2 = s1
+  | otherwise = Map.map (substEffect s2) s1 `Map.union` s2
+
+-- | Compose a list of substitutions, the last applied first:
+-- @composeSubsts [s3, s2, s1] = s3 ∘ s2 ∘ s1@.
+composeSubsts :: [EffSubst] -> EffSubst
+composeSubsts = foldr composeSubst Map.empty
+
+-- | Apply a substitution to every type in Γ.
+substEnv :: EffSubst -> TyEnv -> TyEnv
+substEnv s env
+  | Map.null s = env
+  | otherwise = Map.map (substType s) env
+
+-- | Apply a substitution to every cascade in Δ.
+substDelta :: EffSubst -> Delta -> Delta
+substDelta s (Delta m)
+  | Map.null s = Delta m
+  | otherwise = Delta (Map.map (\(DeltaEntry deps eff) -> DeltaEntry deps (substEffect s eff)) m)
+
+-- | Apply a substitution to every inferred type and effect in a typed tree,
+-- including the expressions inside JSX attributes. Types and effects written
+-- in the program (a λ-parameter annotation, an effect literal) are syntax and
+-- are left alone.
+substNode :: EffSubst -> AnnotatedNode -> AnnotatedNode
+substNode s node@(NodeAnnotation sp ty eff :< langF)
+  | Map.null s = node
+  | otherwise = NodeAnnotation sp (substType s ty) (substEffect s eff) :< langF'
+  where
+    langF' = case langF of
+      LangFJSXNode (JSXElementNodeF tag attrs children) ->
+        LangFJSXNode (JSXElementNodeF tag (map attr attrs) (map (substNode s) children))
+      LangFJSXNode (JSXSelfClosingNodeF tag attrs) ->
+        LangFJSXNode (JSXSelfClosingNodeF tag (map attr attrs))
+      other -> fmap (substNode s) other
+    attr (JSXAttr (n, JSXAttrExpr e)) = JSXAttr (n, JSXAttrExpr (substNode s e))
+    attr a = a
+
+-- | 'substNode' over the expressions of a typed declaration.
+substDeclaration :: EffSubst -> AnnotatedDeclaration -> AnnotatedDeclaration
+substDeclaration s (ann :< declF) = ann :< case declF of
+  DeclStateF var setter e -> DeclStateF var setter (substNode s e)
+  DeclEffectF deps (Block es) -> DeclEffectF deps (Block (map (substNode s) es))
+  DeclLetF var mTy e -> DeclLetF var mTy (substNode s e)
+  DeclSubCompF {} -> declF
+
 -- | Draw a fresh unification variable from the counter in 'RIOApp'.
 freshUnifVar :: InferenceM Int
 freshUnifVar = do
@@ -699,44 +801,32 @@ writtenNamesType ty = case ty of
 --
 -- Only a unification variable is bound. A written variable is rigid: it
 -- unifies with itself, or with a unification variable, which is then bound
--- to it.
+-- to it. A unification variable is not bound to an effect it occurs in (the
+-- occurs check). The result is idempotent: no variable it binds occurs in
+-- what it binds any variable to.
+--
+-- A rule with several premises solves them left to right, each under the
+-- substitution so far, and composes the results (see 'unifyEffectPairs').
 unifyEffect :: Effect -> Effect -> InferenceM EffSubst
 unifyEffect e1 e2 = case (e1, e2) of
   (EffUnif u1, EffUnif u2) | u1 == u2 -> return Map.empty
-  (EffUnif u, eff) -> return (Map.singleton (Unif u) eff)
-  (eff, EffUnif u) -> return (Map.singleton (Unif u) eff)
+  (EffUnif u, eff) -> bindUnif u eff
+  (eff, EffUnif u) -> bindUnif u eff
   (EffVar v1, EffVar v2) | v1 == v2 -> return Map.empty
   (EffNone, EffNone) -> return Map.empty
   (EffSeq s1, EffSeq s2) | length s1 == length s2 ->
-    foldM (\subst (a, b) -> do
-      s <- unifyEffect (substEffect subst a) (substEffect subst b)
-      return (Map.union subst s)) Map.empty (zip s1 s2)
+    unifyEffectPairs (zip s1 s2)
   (eff, EffSeq s2) -> do
     case s2 of
       [] -> unifyEffect eff EffNone
-      eff1 : rest -> do
-        s1 <- unifyEffect eff eff1
-        ss <- mapM (unifyEffect EffNone) rest
-        return $ List.foldl Map.union s1 ss
+      eff1 : rest -> unifyEffectPairs ((eff, eff1) : map (\r -> (EffNone, r)) rest)
   (EffSeq s2, eff) -> do
     case s2 of
       [] -> unifyEffect eff EffNone
-      eff1 : rest -> do
-        s1 <- unifyEffect eff eff1
-        ss <- mapM (unifyEffect EffNone) rest
-        return $ List.foldl Map.union s1 ss
-  (EffBranch a1 b1, EffBranch a2 b2) -> do
-    s1 <- unifyEffect a1 a2
-    s2 <- unifyEffect (substEffect s1 b1) (substEffect s1 b2)
-    return (Map.union s1 s2)
-  (EffBranch a1 b1, eff) -> do
-    s1 <- unifyEffect a1 eff
-    s2 <- unifyEffect (substEffect s1 b1) (substEffect s1 eff)
-    return (Map.union s1 s2)
-  (eff, EffBranch a1 b1) -> do
-    s1 <- unifyEffect a1 eff
-    s2 <- unifyEffect (substEffect s1 b1) (substEffect s1 eff)
-    return (Map.union s1 s2)
+      eff1 : rest -> unifyEffectPairs ((eff, eff1) : map (\r -> (EffNone, r)) rest)
+  (EffBranch a1 b1, EffBranch a2 b2) -> unifyEffectPairs [(a1, a2), (b1, b2)]
+  (EffBranch a1 b1, eff) -> unifyEffectPairs [(a1, eff), (b1, eff)]
+  (eff, EffBranch a1 b1) -> unifyEffectPairs [(a1, eff), (b1, eff)]
   (EffAfter d1 e1', EffAfter d2 e2') | d1 == d2 -> unifyEffect e1' e2'
   (EffLoop n1, EffLoop n2) | n1 == n2 -> return Map.empty
   (EffStateChange n1, EffStateChange n2) | n1 == n2 -> return Map.empty
@@ -754,6 +844,25 @@ unifyEffect e1 e2 = case (e1, e2) of
       | otherwise = ""
     isWritten (EffVar _) = True
     isWritten _ = False
+
+-- | Bind a unification variable, after the occurs check: @?e ≐ F@ with @?e@
+-- free in @F@ (and @F ≠ ?e@) has no solution, since the binding would be
+-- cyclic.
+bindUnif :: Int -> Effect -> InferenceM EffSubst
+bindUnif u eff
+  | Unif u `Set.member` freeEffVarsEffect eff =
+      fail $ "Cannot unify effects: " <> show (pretty (EffUnif u)) <> " and " <> show (pretty eff)
+        <> " (occurs check: the variable occurs in the effect it would be bound to)"
+  | otherwise = return (Map.singleton (Unif u) eff)
+
+-- | Solve a list of effect equations left to right: each is unified under
+-- the substitution the earlier ones produced, and the results are composed.
+unifyEffectPairs :: [(Effect, Effect)] -> InferenceM EffSubst
+unifyEffectPairs = foldM step Map.empty
+  where
+    step s (a, b) = do
+      s' <- unifyEffect (substEffect s a) (substEffect s b)
+      return (composeSubst s' s)
 
 -- | Strict unification for types (structure must match exactly, effects unified)
 -- | Expected type comes first then actual type
@@ -773,12 +882,13 @@ unifyType t1 t2 = case (t1, t2) of
   (TPair a1 b1, TPair a2 b2) -> do
     s1 <- unifyType a1 a2
     s2 <- unifyType (substType s1 b1) (substType s1 b2)
-    return (Map.union s1 s2)
+    return (composeSubst s2 s1)
   (TArrow [] a1 r1 e1, TArrow [] a2 r2 e2) -> do
     s1 <- unifyType a1 a2
     s2 <- unifyType (substType s1 r1) (substType s1 r2)
-    s3 <- unifyEffect (substEffect s2 (substEffect s1 e1)) (substEffect s2 (substEffect s1 e2))
-    return (Map.unions [s1, s2, s3])
+    let s12 = composeSubst s2 s1
+    s3 <- unifyEffect (substEffect s12 e1) (substEffect s12 e2)
+    return (composeSubst s3 s12)
   (TArrow vs1 a1 r1 e1, TArrow vs2 a2 r2 e2) | length vs1 == length vs2 -> do
     let common = freshNames (writtenNamesType t1 <> writtenNamesType t2) vs1
         rename vs = Map.fromList (zip (map Written vs) (map EffVar common))
@@ -845,8 +955,9 @@ generalizeEffect _ ty = ty
 -- σ's binders are made rigid (renamed to written variables fresh for
 -- everything in sight), the inferred schema is instantiated, and the two are
 -- unified. A unification variable of the context may not be bound to one of
--- σ's binders, which would let it escape.
-checkAnnotation :: Text -> Set EffVarKey -> Type -> Type -> InferenceM ()
+-- σ's binders, which would let it escape. The unifier is returned: what it
+-- says about the context's unification variables holds from here on.
+checkAnnotation :: Text -> Set EffVarKey -> Type -> Type -> InferenceM EffSubst
 checkAnnotation var ctx sch inferred = do
   let (skolems, annBody) = case sch of
         TArrow vs i o e ->
@@ -868,6 +979,7 @@ checkAnnotation var ctx sch inferred = do
     fail $ "The annotation of '" <> Text.unpack var <> "' quantifies an effect variable that the context fixes"
       <> "\n  Annotation " <> show (pretty sch)
       <> "\n  Inferred   " <> show (pretty inferred)
+  return s
 
 -- | A λ-parameter annotation, as in OCaml's @fun (f : 'a -> unit) -> …@ or a
 -- Haskell pattern signature: a written variable that no enclosing scope binds

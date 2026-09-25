@@ -45,7 +45,6 @@ builtinFunctionTypes = Map.fromList
   , ("and", "bool -> bool -> bool")
   , ("not", "bool -> bool")
   , ("()", "unit")
-  , ("once", "unit")
   , ("expensive", "int -> int")
   , ("fetch", "forall e. (string * (any -> unit | e)) -> unit | after 1n {e}")
   , ("fetchData", "forall eSuc, eErr. (string * (any -> unit | eSuc) * (any -> unit | eErr)) -> unit | after 1n {eSuc + eErr}")

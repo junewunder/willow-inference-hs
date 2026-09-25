@@ -547,14 +547,16 @@ bracket in `always click<#doc> {…}` delimits the handler *body*, not a delay; 
 the `{…}` after `after Nu`.
 
 Inference is Hindley–Milner-style, extended so that library functions (`fetch`,
-`setTimeout`, `setInterval`, …) are polymorphic in their latent effect — which is what
+`setTimeout`, `asyncCompute`, …) are polymorphic in their latent effect — which is what
 lets `TextInput` above be typed once and instantiated per caller. As in textbook
 Hindley–Milner, written effect variables are rigid (except in a λ-parameter annotation,
 where one the component does not bind stands for whatever effect it meets, as in OCaml's
 `fun (f : 'a -> unit) -> …`), every `let` is generalised over the
 variables its context does not own, an annotated `let` must be an instance of what its
 definition infers, and each component instance gets fresh variables for its effect
-parameters. The paper gives the
+parameters. Unification is Algorithm W's: one substitution is threaded through a whole
+component, composed at each step and applied to the context, and a variable is never
+bound to an effect it occurs in. The paper gives the
 grammar (Fig. 5) and the full set of typing rules (Figs. 6–7, and Figs. 10–15 in the
 appendix).
 

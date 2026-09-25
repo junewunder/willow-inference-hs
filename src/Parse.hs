@@ -154,6 +154,7 @@ pEventDecl = do
 -- | Parse annotated component
 pComponent :: AnnotatedParser Component
 pComponent = do
+  startPos <- getSourcePos
   _ <- symbol "comp" <?> "component declaration (comp)"
   compNameParsed <- pIdentifier <?> "component name"
   effectParamsParsed <- option [] $ do
@@ -165,6 +166,8 @@ pComponent = do
   args <- parens (pArg `sepBy` symbol ",") <?> "component argument list"
   _ <- symbol ":" <?> "colon before return type"
   mType <- pType <?> "component return mType"
+  -- The component's span is its header, up to the return type.
+  headerEnd <- getSourcePos
   _ <- bracesOpen <?> "opening brace for component body"
   decls <- parseAnnotatedDeclsOrFail
   _ <- symbol "return" <?> "return statement in component body"
@@ -177,7 +180,8 @@ pComponent = do
           nAnnot :< _ ->
             let sAnnot = SourceAnnotation (annNodeSpan nAnnot) in
             (decls ++ [mkDeclLet (Just sAnnot) "returnVar" Nothing retExpr], "returnVar")
-  return $ mkComponent compNameParsed effectParams args finalDecls retVar mType
+  let _ :< compF = mkComponent compNameParsed effectParams args finalDecls retVar mType
+  return $ SourceAnnotation (Span startPos headerEnd) :< compF
 
 -- | Helper to parse component arguments
 pArg :: AnnotatedParser (Text, Type)
@@ -207,14 +211,16 @@ parseAnnotatedDeclsOrFail = go []
 pDecl :: AnnotatedParser [Declaration]
 pDecl = choice
   [ do
+      startPos <- getSourcePos
       _ <- symbol "state"
       var <- pIdentifier
       _ <- symbol ","
       setter <- pIdentifier
       _ <- symbol "default"
       val <- pExprTop
+      endPos <- getSourcePos
       _ <- symbol ";"
-      return [mkDeclState var setter val]
+      return [setDeclSpan (Span startPos endPos) (mkDeclState var setter val)]
   , do
       _ <- symbol "let"
       -- Try destructuring pattern first, then regular let
@@ -235,13 +241,18 @@ pDecl = choice
             return [mkDeclLet (Just valAnnotation) var mSchema val]
         ]
   , do
+      -- An @on@ declaration's span is its head, @on x, y@: the block's
+      -- statements carry their own.
+      startPos <- getSourcePos
       _ <- symbol "on"
       deps <- pIdentifier `sepBy1` symbol ","
+      endPos <- getSourcePos
       _ <- symbol "do"
       effect <- mkDeclEffect deps <$> pBlock
       _ <- optional $ symbol ";"
-      return [effect]
+      return [setDeclSpan (Span startPos endPos) effect]
   , do
+      startPos <- getSourcePos
       _ <- symbol "comp"
       inst <- pIdentifier
       _ <- symbol "="
@@ -252,10 +263,18 @@ pDecl = choice
         _ <- symbol ">"
         return es
       args <- parens (pCompArg `sepBy` symbol ",")
+      endPos <- getSourcePos
       _ <- symbol ";"
       let (letDecls, argNames) = processCompArgs inst args
-      return $ letDecls ++ [mkDeclSubComp inst cname effs argNames]
+          instDecl = setDeclSpan (Span startPos endPos) (mkDeclSubComp inst cname effs argNames)
+      return $ letDecls ++ [instDecl]
   ]
+
+-- | Give a declaration its source span. The span ends before the closing
+-- @;@ (or, for @on@, before @do@), whose lexeme would carry it past the
+-- trailing whitespace onto the next line.
+setDeclSpan :: Span -> Declaration -> Declaration
+setDeclSpan sp (_ :< declF) = SourceAnnotation sp :< declF
 
 -- | Parse annotated block
 pBlock :: AnnotatedParser Block
@@ -660,7 +679,6 @@ pDelay = do
 pDelayTerm :: AnnotatedParser Delay
 pDelayTerm = Time . fromInteger <$> lexeme integer <*> pUnit
 
--- | Parse an effect variable name
 -- | Parse an effect variable name. The leading @?@ is optional on input but is
 -- always produced on output (see 'prettyEffect'), so printed effects reparse.
 -- This parses written variables only: a unification variable prints as

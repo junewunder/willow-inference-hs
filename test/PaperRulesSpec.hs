@@ -354,7 +354,7 @@ spec = describe "Paper typing rules" $ do
         Right _ -> expectationFailure "an on-block over an unknown name was accepted"
 
     it "T-ON-DECL (negative): a name in scope without a Δ entry (a setter, a built-in) cannot be watched" $ do
-      forM_ ["setX", "once"] $ \name -> do
+      forM_ ["setX", "addOne"] $ \name -> do
         result <- inferSourceEither $ Text.unlines
           [ "comp TOnNoEntry(clk: int) : unit {"
           , "  state x, setX default 0;"

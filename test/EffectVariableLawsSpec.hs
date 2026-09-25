@@ -11,10 +11,12 @@ import Import
 import InferenceMonad (InferenceError, InferenceM, runInferenceWithContext)
 import InferTyEffect
   ( EffSubst
+  , composeSubst
   , freeEffVarsEffect
   , freeEffVarsType
   , generalizeEffect
   , instantiateSchema
+  , substEffect
   , substType
   , unifyEffect
   , unifyType
@@ -61,6 +63,34 @@ spec = modifyMaxSuccess (const 1000) $ describe "Effect-variable laws (InferTyEf
         result <- tryInference (unifyEffect (EffVar a) (EffVar b))
         pure (isLeft result)
 
+    -- Algorithm W's invariant: a unifier never binds a variable that occurs
+    -- in the image of one it binds, so applying it twice changes nothing.
+    it "produces an idempotent substitution (effects)" $
+      property $ \(Eff e1) (Eff e2) -> ioProperty $ do
+        result <- tryInference (unifyEffect e1 e2)
+        pure $ case result of
+          Left _ -> property True
+          Right s -> counterexample (show s) (idempotent s)
+
+    it "produces an idempotent substitution (types)" $
+      property $ \(Ty t1) (Ty t2) -> ioProperty $ do
+        result <- tryInference (unifyType t1 t2)
+        pure $ case result of
+          Left _ -> property True
+          Right s -> counterexample (show s) (idempotent s)
+
+    it "makes two effects without sequences or branches equal" $
+      forAll (genStructural 3) $ \e1 -> forAll (genStructural 3) $ \e2 -> ioProperty $ do
+        result <- tryInference (unifyEffect e1 e2)
+        pure $ case result of
+          Left _ -> property True
+          Right s -> counterexample (show s) $ substEffect s e1 === substEffect s e2
+
+    it "never binds a variable to an effect it occurs in (the occurs check)" $
+      forAll (choose (0, 3)) $ \u -> property $ \(Eff e) -> forAll (containing u e) $ \cyclic -> ioProperty $ do
+        result <- tryInference (unifyEffect (EffUnif u) cyclic)
+        pure $ counterexample (show cyclic) (isLeft result)
+
     it "unifies a schema with a renaming of its binders, binding nothing" $
       property $ \(Ty ty) -> ioProperty $ do
         let renamed = renameBinders ty
@@ -85,6 +115,10 @@ spec = modifyMaxSuccess (const 1000) $ describe "Effect-variable laws (InferTyEf
         pure $ counterexample (show gen) (isRight result)
 
   describe "substitution" $ do
+    it "composes: applying s2 ∘ s1 is applying s1, then s2" $
+      property $ \(Eff e) (Subst s1) (Subst s2) ->
+        substEffect (composeSubst s2 s1) e === substEffect s2 (substEffect s1 e)
+
     it "never touches a variable bound by the arrow's binder list" $
       forAll genSchema $ \ty -> property $ \(Eff e) ->
         let s = Map.fromList [(Written v, e) | v <- binders ty]
@@ -94,6 +128,16 @@ spec = modifyMaxSuccess (const 1000) $ describe "Effect-variable laws (InferTyEf
       property $ \(Ty ty) (Subst s) ->
         let image k = maybe (Set.singleton k) freeEffVarsEffect (Map.lookup k s)
          in freeEffVarsType (substType s ty) === Set.unions (map image (toList (freeEffVarsType ty)))
+
+-- | No variable a substitution binds occurs free in what it binds any
+-- variable to, which is exactly when applying it twice equals applying it
+-- once.
+idempotent :: EffSubst -> Property
+idempotent s =
+  let bound = Set.fromList (Map.keys s)
+      ranges = Set.unions (map freeEffVarsEffect (Map.elems s))
+   in counterexample ("bound and free: " <> show (Set.intersection bound ranges)) $
+        Set.null (Set.intersection bound ranges)
 
 -- ---------------------------------------------------------------------------
 -- Running inference
@@ -227,6 +271,32 @@ genType n
   where
     sub = genType (n - 1)
     genBinders = frequency [(2, pure []), (3, sublistOf writtenNames)]
+
+-- | Effects built from leaves, delays and modalities only: no sequence and no
+-- branch, whose unification rules equate an arm with a whole (see
+-- 'unifyEffect'). On these, unification is syntactic.
+genStructural :: Int -> Gen Effect
+genStructural n
+  | n <= 0 = genLeaf
+  | otherwise =
+      frequency
+        [ (3, genLeaf)
+        , (1, EffAfter (Time 1 Renders) <$> sub)
+        , (1, EffAlways (EventLabel "click" ["#doc"]) <$> sub)
+        ]
+  where
+    sub = genStructural (n - 1)
+
+-- | An effect, other than ?u itself, in which ?u occurs.
+containing :: Int -> Effect -> Gen Effect
+containing u e =
+  elements
+    [ mkEffSeq [EffUnif u, e]
+    , mkEffSeq [e, EffUnif u]
+    , EffBranch (EffUnif u) e
+    , EffAfter (Time 1 Renders) (EffUnif u)
+    , EffAlways (EventLabel "click" ["#doc"]) (mkEffSeq [e, EffUnif u])
+    ]
 
 -- | An arrow with at least one binder.
 genSchema :: Gen Type

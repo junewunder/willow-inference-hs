@@ -32,7 +32,7 @@ pin exact effect strings, so "it compiles" is not evidence the semantics are rig
 |------|----------|
 | `src/Types.hs` | **All** data types (`ExprF`/`JSXNodeF`/`JSXChildF`, `Type`, `Effect`, `Delay`, `Unit`, `Delta`, `Sigma`), the `Pretty` instances, the manual `Show/Eq/Ord` for `AnnotatedNode`, `mk*` smart constructors, `Options` |
 | `src/Parse.hs` | Megaparsec parser → `AnnotatedProgram` with dummy type/effect annotations |
-| `src/InferTyEffect.hs` | Type + effect inference: `unifyType`/`unifyEffect`, `substType`/`substEffect`, `instantiateSchema`, `generalizeEffect`, `freeVars` |
+| `src/InferTyEffect.hs` | Type + effect inference (Algorithm W): `unifyType`/`unifyEffect`, `substType`/`substEffect`, `composeSubst`, `instantiateSchema`, `generalizeEffect`, `freeVars` |
 | `src/InferenceMonad.hs` | `InferenceM` = `ExceptT InferenceError (ReaderT InferenceContext (RIO RIOApp))`; fresh effect vars from `appVarCounter` |
 | `src/Builtins.hs` | Built-in function schemas, written as **strings** and parsed by `Parse.pType` at load |
 | `src/Analysis/` | `Common` (`fullEffect`, `simplifyEffect`, `relevantEffect`), `EffectReadability` (`effectSummary`), `InitialRender` (`--first`), `HandlerCleanup` (`--cleanup`) |
@@ -75,6 +75,11 @@ Everything runs in `RIO RIOApp`. `RIOApp` carries the log func, process context,
   (`showLangF`/`eqLangF`/`compareLangF` and the per-functor `show*`/`eq*`/`compare*`
   in `Types.hs`), not derived. New constructors need all three by hand, plus the
   `tag*` helpers that order across constructors.
+- **Inference is Algorithm W, so thread the substitution.** Every `infer*` function
+  returns `(EffSubst, node)`. Infer a subterm under `substEnv θ Γ` with θ the
+  substitution so far, combine with `composeSubst` (never `Map.union`), and apply the
+  final θ to every type or effect you built earlier before combining them. Dropping a
+  unifier type-checks and silently loses what it learned.
 - **Annotations differ by level:** top-level nodes carry `SourceAnnotation` (a span);
   expressions/JSX carry `NodeAnnotation` (span + inferred `Type` + inferred
   `Effect`). The parser fills the latter with dummies (`TUnit`, `EffNone`); inference

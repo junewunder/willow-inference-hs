@@ -111,6 +111,7 @@ test-suite willow-hs-test
       ParseSpec
       RunAnnotatedSpec
       SubEffectLawsSpec
+      SubstitutionSpec
       UtilSpec
       Paths_willow_hs
   hs-source-dirs:
