@@ -7,6 +7,8 @@ import Text.Megaparsec (runParser, initialPos, SourcePos(..), mkPos, unPos)
 import qualified RIO.Text as Text
 import Import
 import Control.Comonad.Cofree (Cofree(..))
+import Prettyprinter (pretty, layoutCompact)
+import Prettyprinter.Render.Text (renderStrict)
 
 spec :: Spec
 spec = do
@@ -382,3 +384,58 @@ spec = do
                   (EffSeq [EffVar (EffVarName "e2"), EffRemove (EventLabel "comp" ["suc"])])
               ]
         Right other -> expectationFailure $ "Expected a curried TArrow, got: " <> show other
+
+  describe "if-then-else expressions" $ do
+    -- `if c then e1 else e2` is the paper's syntax for a conditional (Fig. 5);
+    -- it builds the same EIfF node as the `c ? e1 : e2` ternary.
+    let lets body = Text.unlines $ ["comp C(b: bool, c: bool, x: int) : int {"] <> map ("  " <>) body <> ["  return 0;", "}"]
+        rhsOf name code = case runParser pComponent "test" code of
+          Left err -> Left (show err)
+          Right (_ :< ComponentF _ _ _ decls _ _) ->
+            maybe (Left ("no let " <> Text.unpack name)) Right
+              (listToMaybe [e | (_ :< DeclLetF v _ e) <- decls, v == name])
+        rejects name code = case rhsOf name code of
+          Left _ -> pure ()
+          Right e -> expectationFailure $ "expected a parse failure, got: " <> showAnnotatedNode e
+        rendered = either id (Text.unpack . renderStrict . layoutCompact . pretty)
+
+    it "parses to an EIfF node with the three parts in order" $ do
+      case rhsOf "v" (lets ["let v = if b then 1 else 2;"]) of
+        Right (_ :< LangFExpr (EIfF (_ :< LangFExpr (EVarF "b"))
+                                    (_ :< LangFExpr (ELitIntF 1))
+                                    (_ :< LangFExpr (ELitIntF 2)))) -> pure ()
+        other -> expectationFailure $ "expected EIfF b 1 2, got: " <> either id showAnnotatedNode other
+
+    it "builds the same tree as the ternary" $ do
+      -- Spans differ, so compare the printed forms.
+      let code = lets [ "let p = if b then x + 1 else x;"
+                      , "let q = b ? x + 1 : x;" ]
+      rendered (rhsOf "p" code) `shouldBe` rendered (rhsOf "q" code)
+
+    it "lets the condition be an application (unlike the bare ternary)" $ do
+      -- Application binds looser than `? :`, so `f b ? … : …` parses as
+      -- f (b ? … : …). The `then` keyword delimits the condition instead.
+      case rhsOf "v" (lets ["let v = if not b then 1 else 2;"]) of
+        Right (_ :< LangFExpr (EIfF (_ :< LangFExpr (EAppF (_ :< LangFExpr (EVarF "not")) _)) _ _)) -> pure ()
+        other -> expectationFailure $ "expected the condition to be `not b`, got: " <> either id showAnnotatedNode other
+
+    it "extends the else-arm as far right as possible" $ do
+      case rhsOf "v" (lets ["let v = if b then 1 else x + 2;"]) of
+        Right (_ :< LangFExpr (EIfF _ _ (_ :< LangFExpr (EAppF _ (_ :< LangFExpr (ELitIntF 2)))))) -> pure ()
+        other -> expectationFailure $ "expected else-arm x + 2, got: " <> either id showAnnotatedNode other
+
+    it "nests in the then-arm and sits inside a larger expression when parenthesized" $ do
+      let code = lets [ "let v = if b then if c then 1 else 2 else 3;"
+                      , "let w = 1 + (if b then x else 2) * 2;" ]
+      rendered (rhsOf "v" code) `shouldBe` rendered (rhsOf "v" (lets ["let v = b ? (c ? 1 : 2) : 3;"]))
+      rendered (rhsOf "w" code) `shouldBe` rendered (rhsOf "w" (lets ["let w = 1 + (b ? x : 2) * 2;"]))
+
+    it "reserves if/then/else but not identifiers that merely start with them" $ do
+      case rhsOf "elsewhere" (lets ["let ifx = 1;", "let thenx = ifx;", "let elsewhere = thenx;"]) of
+        Right (_ :< LangFExpr (EVarF "thenx")) -> pure ()
+        other -> expectationFailure $ "expected EVarF thenx, got: " <> either id showAnnotatedNode other
+      rejects "if" (lets ["let if = 1;"])
+      rejects "v" (lets ["let v = then;"])
+
+    it "rejects an if without an else" $
+      rejects "v" (lets ["let v = if b then 1;"])

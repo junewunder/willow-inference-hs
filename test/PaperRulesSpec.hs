@@ -534,6 +534,26 @@ spec = describe "Paper typing rules" $ do
           getEffect s `shouldBe` branchE (after1r (at "x")) (after1r (at "y"))
         _ -> expectationFailure "expected a single-statement on-block"
 
+    it "T-BRANCH (paper syntax): the same rule, written if e₁ then e₂ else e₃" $ do
+      -- The condition here is effectful (T-PROD then T-SND), so F₁ is
+      -- visible: the setter call runs first, then exactly one arm.
+      (_sigma, typedComps) <- inferSource $ Text.unlines
+        [ "comp TBranchIf(clk: int, b: bool) : unit {"
+        , "  state x, setX default 0;"
+        , "  state y, setY default 0;"
+        , "  state z, setZ default 0;"
+        , "  on clk do { if (setZ(addOne), b).1 then setX(addOne) else setY(addOne) };"
+        , "  return ();"
+        , "}"
+        ]
+      stmts <- expectJust "on clk block" $ findOnBlock ["clk"] (typedDeclsOf typedComps 0)
+      case stmts of
+        [s] -> do
+          getType s `shouldBe` TUnit
+          getEffect s `shouldBe`
+            seqE [after1r (at "z"), branchE (after1r (at "x")) (after1r (at "y"))]
+        _ -> expectationFailure "expected a single-statement on-block"
+
     it "T-PROD: (e₁, e₂) : τ₁ × τ₂ ∣ F₁ * F₂" $ do
       (_sigma, typedComps) <- inferSource $ Text.unlines
         [ "comp TProd(clk: int) : unit {"
