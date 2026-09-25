@@ -551,7 +551,8 @@ Inference is Hindley–Milner-style, extended so that library functions (`fetch`
 lets `TextInput` above be typed once and instantiated per caller. As in textbook
 Hindley–Milner, written effect variables are rigid (except in a λ-parameter annotation,
 where one the component does not bind stands for whatever effect it meets, as in OCaml's
-`fun (f : 'a -> unit) -> …`), every `let` is generalised over the
+`fun (f : 'a -> unit) -> …`; like an OCaml type variable, a name denotes one variable
+across all the annotations of its declaration), every `let` is generalised over the
 variables its context does not own, an annotated `let` must be an instance of what its
 definition infers, and each component instance gets fresh variables for its effect
 parameters. Unification is Algorithm W's: one substitution is threaded through a whole
