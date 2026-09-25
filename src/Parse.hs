@@ -99,12 +99,15 @@ reservedKeywords :: [Text]
 reservedKeywords =
   [ "comp", "state", "on", "do", "let", "return", "default",
     "true", "false", "string", "int", "bool", "none", "loop",
-    "after", "effect", "r", "n"
+    "after", "effect", "r", "n", "if", "then", "else"
   ]
 
--- | Parse an identifier
+-- | Parse an identifier. A reserved keyword is rejected WITHOUT consuming it
+-- ('try'), so an expression can stop in front of one: in @if c then …@ the
+-- application operator probes @then@ as a further argument of @c@, and must
+-- be able to back off.
 pIdentifier :: AnnotatedParser Text
-pIdentifier = lexeme $ do
+pIdentifier = try $ lexeme $ do
   firstChar <- letterChar
   rest <- many $ try $ do
     -- Look ahead for .0 or .1 and stop if found
@@ -116,7 +119,7 @@ pIdentifier = lexeme $ do
     else return ident
 
 pIdentifierNoDot :: AnnotatedParser Text
-pIdentifierNoDot = lexeme $ do
+pIdentifierNoDot = try $ lexeme $ do
   firstChar <- letterChar
   rest <- many $ try $ do
     alphaNumChar
@@ -329,6 +332,17 @@ pExprAtom = do
           ECancelF <$> (pModalityKeyword "cancel" *> pEventLabel)
       , try $ withSourceInfo $
           ERemoveF <$> (pModalityKeyword "remove" *> pEventLabel)
+      , -- if c then e1 else e2: the paper's syntax for a conditional, and
+        -- the same 'EIfF' node as the @c ? e1 : e2@ ternary. The three words
+        -- are reserved, so once @if@ is seen the rest is committed; each arm
+        -- is a full 'pExpr', so the else-arm extends as far right as it can.
+        withSourceInfo $ do
+          _ <- try (pModalityKeyword "if")
+          cond <- pExpr
+          _ <- pModalityKeyword "then"
+          thenE <- pExpr
+          _ <- pModalityKeyword "else"
+          EIfF cond thenE <$> pExpr
       , -- Variables
         withSourceInfo $ EVarF <$> pIdentifier
       , -- JSX nodes

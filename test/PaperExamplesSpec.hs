@@ -52,6 +52,18 @@ spec = describe "Paper worked examples" $ do
     cascadeOf sigma "SetterBranch" "clk"
       `shouldBe` branchE (after1r (at "x")) (after1r (at "y"))
 
+  it "EX-SETTER-BRANCH (verbatim): the paper's if-then-else form infers the same effect" $ do
+    (sigma, _typedComps) <- inferSource $ Text.unlines
+      [ "comp SetterBranchIf(clk: int, b: bool) : unit {"
+      , "  state x, setX default 0;"
+      , "  state y, setY default 0;"
+      , "  on clk do { if b then setX(addOne) else setY(addOne) };"
+      , "  return ();"
+      , "}"
+      ]
+    cascadeOf sigma "SetterBranchIf" "clk"
+      `shouldBe` branchE (after1r (at "x")) (after1r (at "y"))
+
   describe "EX-ONCHANGE: text-input onChange (§2)" $ do
     it "inner part: a handler that updates z has effect ○¹ʳ @z" $ do
       -- The application lives in an on clk block (purity: an impure let RHS
