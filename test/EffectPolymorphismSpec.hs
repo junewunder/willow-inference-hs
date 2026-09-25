@@ -234,6 +234,53 @@ spec = describe "Effect polymorphism (Hindley–Milner)" $ do
       pure ()
 
   -- -----------------------------------------------------------------------
+  describe "an application checks an argument against a schema parameter" $ do
+
+    -- r2 uses its parameter at the effect of whichever function it is given.
+    let r2 = "  let r2 = (g: (forall e. (int -> unit | e) -> int -> unit | e)) => { g((u: int) => ())(1) };"
+        program extra = Text.unlines $
+          [ "comp C(clk: int) : int {"
+          , "  state x, setX default 0;"
+          , r2
+          ] <> extra <>
+          [ "  return clk;"
+          , "}"
+          ]
+
+    it "accepts a variable whose schema is as general as the parameter" $ do
+      _ <- inferSource $ program
+        [ "  let pid : forall e. (int -> unit | e) -> int -> unit | e = (f: int -> unit | e) => f;"
+        , "  let u = r2(pid);"
+        ]
+      pure ()
+
+    it "accepts an unannotated λ, whose parameter takes the schema's type" $ do
+      _ <- inferSource $ program ["  let u = r2((f) => f);"]
+      pure ()
+
+    it "rejects an argument that is not polymorphic enough" $ do
+      -- The argument's result always sets x, not the effect it is given.
+      result <- inferSourceEither $ program
+        ["  let u = r2((f: int -> unit | e) => (k: int) => setX((c: int) => k));"]
+      case result of
+        Left err -> Text.unpack (errorMessage err) `shouldContain` "a written effect variable is rigid"
+        Right _ -> expectationFailure "an argument whose result sets x was accepted for ∀e. (int → unit | e) → int → unit | e"
+
+    it "does not let a variable of the context escape into a schema binder" $ do
+      -- h's effect ?q belongs to the context, so it cannot be generalised,
+      -- and binding it to the parameter's rigid e would let e escape.
+      result <- inferSourceEither $ Text.unlines
+        [ "comp C(clk: int) : int {"
+        , "  let r1 = (g: (forall e. int -> unit | e)) => { g(1) };"
+        , "  let t = (h: int -> unit | q) => r1((v: int) => h(v));"
+        , "  return clk;"
+        , "}"
+        ]
+      case result of
+        Left err -> Text.unpack (errorMessage err) `shouldContain` "quantifies an effect variable that the context fixes"
+        Right _ -> expectationFailure "a λ of the context's effect ?q was accepted for ∀e. int → unit | e"
+
+  -- -----------------------------------------------------------------------
   describe "schemas unify up to renaming of their binders" $ do
 
     let arrowOf vs eff = TArrow (map EffVarName vs) TInt TUnit eff
