@@ -212,7 +212,10 @@ inferTyEffDeclM :: Sigma -> SigmaE -> Set EffVarKey -> TyEnv -> Delta -> Declara
 inferTyEffDeclM (Sigma sigma) sigmaE scope tyEnv effEnv declNode@(_ :< declF) = do
   let span = getDeclarationSpan declNode
       declText = Text.pack (show (pretty declNode))
-  withSourceContext (Just span) declText $ case declF of
+  -- The written effect variables of the declaration's λ-parameter
+  -- annotations are scoped over the whole declaration.
+  annVars <- newIORef Map.empty
+  local (\ctx -> ctx {annotationEffVars = annVars}) . withSourceContext (Just span) declText $ case declF of
     DeclStateF var setter expr -> do
       (s, texpr) <- inferTyEffExprTypedM sigmaE tyEnv effEnv expr
       -- T-STATE-DECL purity premise: the default must be pure.
@@ -981,17 +984,28 @@ checkAnnotation var ctx sch inferred = do
       <> "\n  Inferred   " <> show (pretty inferred)
   return s
 
--- | A λ-parameter annotation, as in OCaml's @fun (f : 'a -> unit) -> …@ or a
--- Haskell pattern signature: a written variable that no enclosing scope binds
--- stands for whatever effect it meets, so it becomes a fresh unification
--- variable for this λ (one per name, shared by its occurrences in the
--- annotation). Variables the component binds stay rigid, and a @forall@
+-- | A λ-parameter annotation, read as a type annotation is in OCaml: a
+-- written variable that no enclosing scope binds stands for whatever effect it
+-- meets, so it becomes a unification variable. There is one such variable per
+-- name for the whole enclosing declaration (one @let@, @state@ default or @on@
+-- block), shared by every annotation in it that mentions the name, since
+-- Willow has no shadowing that could rebind it; generalising a @let@ then
+-- quantifies it. Variables the component binds stay rigid, and a @forall@
 -- inside the annotation keeps its own binders ('substType' skips them).
 flexibleParamAnnotation :: Type -> InferenceM Type
 flexibleParamAnnotation ty = do
   scoped <- asks scopedEffVars
+  ref <- asks annotationEffVars
   let unbound = [v | Written v <- toList (freeEffVarsType ty), v `Set.notMember` scoped]
-  fresh <- mapM (\v -> (\n -> (Written v, EffUnif n)) <$> freshUnifVar) unbound
+  fresh <- forM unbound $ \v -> do
+    known <- Map.lookup v <$> readIORef ref
+    e <- case known of
+      Just e -> pure e
+      Nothing -> do
+        e <- EffUnif <$> freshUnifVar
+        modifyIORef' ref (Map.insert v e)
+        pure e
+    pure (Written v, e)
   pure (substType (Map.fromList fresh) ty)
 
 -- | Recover from an inference failure.

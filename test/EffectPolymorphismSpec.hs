@@ -68,9 +68,10 @@ spec = describe "Effect polymorphism (Hindley–Milner)" $ do
         ]
       rejected "a function that changes x returned at effect F" result
 
-    -- A λ-parameter annotation is like OCaml's fun (f : 'a -> unit) -> … or a
-    -- Haskell pattern signature: a variable no enclosing scope binds is
-    -- flexible, and stands for whatever effect the argument has.
+    -- A λ-parameter annotation is read like an OCaml type annotation, as in
+    -- fun (f : 'a -> unit) -> …: a variable no enclosing scope binds is
+    -- flexible, and stands for whatever effect the argument has. It is one
+    -- variable per name across the whole declaration, not per λ.
     let applied params arg = Text.unlines
           [ "comp L" <> params <> "(clk: int) : unit {"
           , "  state x, setX default 0;"
@@ -97,6 +98,50 @@ spec = describe "Effect polymorphism (Hindley–Milner)" $ do
       cascadeOf sigma "L" "clk" `shouldBe` after1r (at "x")
       result <- inferSourceEither $ applied "" (pairOf setX setY)
       rejected "two functions of different effects for the same e" result
+
+    -- Two lets, or one let whose curried λs both annotate their parameter
+    -- with G, applied to a function that changes x and one that changes y.
+    let curried = Text.unlines
+          [ "comp C(clk: int) : int {"
+          , "  state x, setX default 0;"
+          , "  state y, setY default 0;"
+          , "  let ap = (f: int -> unit | G) => (g: int -> unit | G) => { f(1) ;; g(1) };"
+          , "  on clk do { ap((u: int) => setX((c: int) => u))((u: int) => setY((c: int) => u)) };"
+          , "  return clk;"
+          , "}"
+          ]
+        separate = Text.unlines
+          [ "comp C(clk: int) : int {"
+          , "  state x, setX default 0;"
+          , "  state y, setY default 0;"
+          , "  let apf = (f: int -> unit | G) => { f(1) };"
+          , "  let apg = (g: int -> unit | G) => { g(1) };"
+          , "  on clk do { apf((u: int) => setX((c: int) => u)) ;; apg((u: int) => setY((c: int) => u)) };"
+          , "  return clk;"
+          , "}"
+          ]
+
+    it "one name in the annotations of two λs of one declaration is the same variable" $ do
+      result <- inferSourceEither curried
+      case result of
+        Left err -> Text.unpack (errorMessage err) `shouldContain` "Cannot unify effects: @x and @y"
+        Right _ -> expectationFailure "two functions of different effects for the same G were accepted"
+
+    it "one name in the annotations of two declarations is two variables" $ do
+      (sigma, _) <- inferSource separate
+      cascadeOf sigma "C" "clk" `shouldBe` seqE [after1r (at "x"), after1r (at "y")]
+
+    it "an annotation's flexible variable is generalised with its let" $ do
+      (sigma, _) <- inferSource $ Text.unlines
+        [ "comp C(clk: int) : int {"
+        , "  state x, setX default 0;"
+        , "  state y, setY default 0;"
+        , "  let ap = (f: int -> unit | G) => f(1);"
+        , "  on clk do { ap((u: int) => setX((c: int) => u)) ;; ap((u: int) => setY((c: int) => u)) };"
+        , "  return clk;"
+        , "}"
+        ]
+      cascadeOf sigma "C" "clk" `shouldBe` seqE [after1r (at "x"), after1r (at "y")]
 
     it "unification binds neither of two different written variables" $ do
       result <- runInferenceTest $ unifyEffect (EffVar (EffVarName "F")) (EffVar (EffVarName "G"))
