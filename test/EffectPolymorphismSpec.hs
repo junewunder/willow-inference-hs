@@ -131,6 +131,57 @@ spec = describe "Effect polymorphism (Hindley–Milner)" $ do
       (sigma, _) <- inferSource separate
       cascadeOf sigma "C" "clk" `shouldBe` seqE [after1r (at "x"), after1r (at "y")]
 
+    -- One on block that applies a G-annotated λ to a function that changes
+    -- x, and then another to one that changes y. By the second λ, G's
+    -- variable is bound to x's effect, and the second λ must see that.
+    let applyG sep = Text.unlines
+          [ "comp C(clk: int) : int {"
+          , "  state x, setX default 0;"
+          , "  state y, setY default 0;"
+          , "  on clk do { ((f: int -> unit | G) => f(1))((u: int) => setX((c: int) => u))" <> sep
+              <> "((g: int -> unit | G) => g(1))((u: int) => setY((c: int) => u)) };"
+          , "  return clk;"
+          , "}"
+          ]
+        rejectedAtG result = case result of
+          Left err -> Text.unpack (errorMessage err) `shouldContain` "Cannot unify effects: @x and @y"
+          Right _ -> expectationFailure "two functions of different effects for the same G were accepted"
+
+    it "one name in two λs applied in sequence is the same variable" $ do
+      inferSourceEither (applyG " ;; ") >>= rejectedAtG
+
+    it "one name in two λs applied in separate statements is the same variable" $ do
+      inferSourceEither (applyG "; ") >>= rejectedAtG
+
+    it "one name in λs applied in two declarations is two variables" $ do
+      (sigma, _) <- inferSource $ Text.unlines
+        [ "comp C(clk: int, tick: int) : int {"
+        , "  state x, setX default 0;"
+        , "  state y, setY default 0;"
+        , "  on clk do { ((f: int -> unit | G) => f(1))((u: int) => setX((c: int) => u)) };"
+        , "  on tick do { ((g: int -> unit | G) => g(1))((u: int) => setY((c: int) => u)) };"
+        , "  return clk;"
+        , "}"
+        ]
+      cascadeOf sigma "C" "clk" `shouldBe` after1r (at "x")
+      cascadeOf sigma "C" "tick" `shouldBe` after1r (at "y")
+
+    it "an annotation's variable is not generalised inside its declaration" $ do
+      -- G's variable is part of the context until the declaration ends, as
+      -- a named type variable in OCaml is until the end of its definition,
+      -- so a G-annotated λ is not polymorphic enough for k's parameter.
+      result <- inferSourceEither $ Text.unlines
+        [ "comp C(clk: int) : int {"
+        , "  state x, setX default 0;"
+        , "  let k = (h: forall e. (int -> unit | e) -> unit | e) => h((u: int) => setX((c: int) => u));"
+        , "  on clk do { k((f: int -> unit | G) => f(1)) };"
+        , "  return clk;"
+        , "}"
+        ]
+      case result of
+        Left err -> Text.unpack (errorMessage err) `shouldContain` "quantifies an effect variable that the context fixes"
+        Right _ -> expectationFailure "a G-annotated λ was accepted for a polymorphic parameter"
+
     it "an annotation's flexible variable is generalised with its let" $ do
       (sigma, _) <- inferSource $ Text.unlines
         [ "comp C(clk: int) : int {"
