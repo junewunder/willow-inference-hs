@@ -347,8 +347,6 @@ pExprAtom = do
         withSourceInfo $ EVarF <$> pIdentifier
       , -- JSX nodes
         withSourceInfo $ EJSXNodeF <$> pJSXElement
-      , -- Effect expressions
-        withSourceInfo $ EEffectF <$> (symbol "effect" *> pEffect)
       , -- Parenthesized expressions (including pairs and tuples)
         try $ parens $ do
           exprs <- pExpr `sepBy1` symbol ","

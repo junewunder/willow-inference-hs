@@ -439,3 +439,18 @@ spec = do
 
     it "rejects an if without an else" $
       rejects "v" (lets ["let v = if b then 1;"])
+
+  describe "effect is not an expression" $ do
+    -- An effect is inferred, never written as a term; `effect` stays a
+    -- reserved word.
+    it "rejects effect @x as an expression" $ do
+      let code = Text.unlines
+            [ "comp C(clk: int) : int {"
+            , "  state x, setX default 0;"
+            , "  on clk do { effect @x };"
+            , "  return clk;"
+            , "}"
+            ]
+      case runParser pComponent "test" code of
+        Left _ -> pure ()
+        Right c -> expectationFailure $ "expected a parse failure, got: " <> show (pretty c)

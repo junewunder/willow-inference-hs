@@ -500,7 +500,6 @@ inferTyEffExprTypedM sigmaE env effEnv inputNode@(_ :< langF) = do
             elseEff' = substEffect s (getEffect tElse)
             eff = effSeq condEff' (EffBranch thenEff' elseEff')
         return (s, mkTypedExpr span resultSch eff (EIfF tCond tThen tElse))
-      EEffectF eff -> noSubst $ mkTypedExpr span TUnit eff (EEffectF eff)
       EPairF e1 e2 -> do
         (s, tes) <- inferTyEffExprsM sigmaE env effEnv [e1, e2]
         let (te1, te2) = case tes of
@@ -1096,7 +1095,6 @@ lambdaAnnotations = cata alg
         EJSXNodeF node -> node
         EAppF f x -> f ++ x
         EIfF c t e -> c ++ t ++ e
-        EEffectF _ -> []
         EPairF e1 e2 -> e1 ++ e2
         EPairAccessF e _ -> e
         EBindF _ e -> e
