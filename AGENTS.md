@@ -77,9 +77,11 @@ Everything runs in `RIO RIOApp`. `RIOApp` carries the log func, process context,
   `tag*` helpers that order across constructors.
 - **Inference is Algorithm W, so thread the substitution.** Every `infer*` function
   returns `(EffSubst, node)`. Infer a subterm under `substEnv θ Γ` with θ the
-  substitution so far, combine with `composeSubst` (never `Map.union`), and apply the
-  final θ to every type or effect you built earlier before combining them. Dropping a
-  unifier type-checks and silently loses what it learned.
+  substitution so far (for an expression, `substExprEnv θ`, which also covers Φ,
+  the declaration's λ-annotation variables), combine with `composeSubst` (never
+  `Map.union`), and apply the final θ to every type or effect you built earlier
+  before combining them. Dropping a unifier type-checks and silently loses what it
+  learned.
 - **Annotations differ by level:** top-level nodes carry `SourceAnnotation` (a span);
   expressions/JSX carry `NodeAnnotation` (span + inferred `Type` + inferred
   `Effect`). The parser fills the latter with dummies (`TUnit`, `EffNone`); inference

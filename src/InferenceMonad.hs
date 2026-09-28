@@ -47,10 +47,6 @@ data InferenceContext = InferenceContext
   , scopedEffVars :: Set EffVarName
     -- ^ written effect variables bound by the enclosing component: its
     -- declared effect parameters and those its argument types mention
-  , annotationEffVars :: IORef (Map EffVarName Effect)
-    -- ^ the unification variable standing for each other written effect
-    -- variable in the λ-parameter annotations of the enclosing declaration,
-    -- allocated at the name's first occurrence (see 'flexibleParamAnnotation')
   }
 
 -- | Context-aware inference monad
@@ -96,9 +92,8 @@ instance Exception InferenceError where
 
 -- | Run inference with an initial context
 runInferenceWithContext :: Maybe Span -> Text -> InferenceM a -> RIO RIOApp (Either InferenceError a)
-runInferenceWithContext srcInfo exprText (InferenceM m) = do
-  annVars <- newIORef mempty
-  runReaderT (runExceptT m) (InferenceContext srcInfo exprText mempty annVars)
+runInferenceWithContext srcInfo exprText (InferenceM m) =
+  runReaderT (runExceptT m) (InferenceContext srcInfo exprText mempty)
 
 -- | Update the current context with new source information
 withSourceContext :: Maybe Span -> Text -> InferenceM a -> InferenceM a

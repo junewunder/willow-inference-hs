@@ -43,6 +43,16 @@ import qualified RIO.Text as Text
 
 type TyEnv = Map Text Type
 
+-- | The context an expression is inferred in: Γ, and Φ, which maps each
+-- written effect variable of the enclosing declaration's λ-parameter
+-- annotations that the component does not bind to the unification variable
+-- standing for it (see 'flexibleParamAnnotation'). Φ is part of the context,
+-- so a substitution applies to it as to Γ ('substExprEnv').
+data ExprEnv = ExprEnv
+  { exprTypes :: TyEnv
+  , exprAnnotationVars :: Map EffVarName Effect
+  }
+
 -- | Fold top-level @event ℓ⟨v⟩ : τ;@ declarations into the event signature
 -- Σ_E. Duplicate event declarations are a type error.
 buildSigmaE :: [AnnotatedEventDecl] -> InferenceM SigmaE
@@ -132,7 +142,7 @@ inferTyEffComponentM sigma sigmaE compNode@(_ :< ComponentF name effParams args 
                          in nAnnot :< LangFExpr (EVarF ret)
           Nothing -> mkVar Nothing ret
 
-    (sRet, tret) <- inferTyEffExprTypedM sigmaE env1 effEnv1 retVarNode
+    (sRet, tret) <- inferTyEffExprTypedM sigmaE (ExprEnv env1 Map.empty) effEnv1 retVarNode
     let actualRetSchema = getType tret
         retSpan = maybe span annSourceSpan retVarAnnotation
     -- Use the source context from the return variable for better error reporting
@@ -213,11 +223,17 @@ inferTyEffDeclM (Sigma sigma) sigmaE scope tyEnv effEnv declNode@(_ :< declF) = 
   let span = getDeclarationSpan declNode
       declText = Text.pack (show (pretty declNode))
   -- The written effect variables of the declaration's λ-parameter
-  -- annotations are scoped over the whole declaration.
-  annVars <- newIORef Map.empty
-  local (\ctx -> ctx {annotationEffVars = annVars}) . withSourceContext (Just span) declText $ case declF of
+  -- annotations are scoped over the whole declaration: Φ gives each one
+  -- variable, and the declaration's expressions are inferred under Γ and Φ.
+  scoped <- asks scopedEffVars
+  let names = List.nub
+        [ v | e <- declExprs declF, ty <- lambdaAnnotations e
+            , Written v <- toList (freeEffVarsType ty), v `Set.notMember` scoped ]
+  phi <- Map.fromList <$> forM names (\v -> (,) v . EffUnif <$> freshUnifVar)
+  let exprEnv = ExprEnv tyEnv phi
+  withSourceContext (Just span) declText $ case declF of
     DeclStateF var setter expr -> do
-      (s, texpr) <- inferTyEffExprTypedM sigmaE tyEnv effEnv expr
+      (s, texpr) <- inferTyEffExprTypedM sigmaE exprEnv effEnv expr
       -- T-STATE-DECL purity premise: the default must be pure.
       enforcePureStateDefault var (getEffect texpr)
       let ty = getType texpr
@@ -233,7 +249,7 @@ inferTyEffDeclM (Sigma sigma) sigmaE scope tyEnv effEnv declNode@(_ :< declF) = 
         fail $ if Map.member x tyEnv
           then "Cannot watch " <> Text.unpack x <> " in `on`: it is not an argument, state variable, let or instance"
           else "Variable not in scope: " <> Text.unpack x
-      (s, texprs) <- inferTyEffExprsM sigmaE tyEnv effEnv exprs
+      (s, texprs) <- inferTyEffExprsM sigmaE exprEnv effEnv exprs
       let blockEffects = map (substEffect s . getEffect) texprs
           combinedEffect = seqMany blockEffects
           f casc x = Map.update (\(DeltaEntry d e) -> Just $ DeltaEntry d (effSeq e combinedEffect)) x casc
@@ -243,9 +259,10 @@ inferTyEffDeclM (Sigma sigma) sigmaE scope tyEnv effEnv declNode@(_ :< declF) = 
     -- premise already makes the right-hand side a value-like expression, so
     -- no value restriction is needed. Generalisation sees Γ under the
     -- right-hand side's substitution, so a variable the right-hand side has
-    -- tied to the context is not quantified.
+    -- tied to the context is not quantified. Φ is not part of that context:
+    -- it is scoped over the declaration, which ends here.
     DeclLetF var (Just sch) expr -> do
-      (s1, texpr) <- inferTyEffExprTypedM sigmaE tyEnv effEnv expr
+      (s1, texpr) <- inferTyEffExprTypedM sigmaE exprEnv effEnv expr
       -- T-LET-DECL purity premise: before env/effEnv updates AND
       -- before the check against the annotation (see the placement contract
       -- on 'enforcePureStateDefault').
@@ -263,7 +280,7 @@ inferTyEffDeclM (Sigma sigma) sigmaE scope tyEnv effEnv declNode@(_ :< declF) = 
           effEnv' = Delta (Map.insert var newEntry (unDelta (substDelta s effEnv)))
       pure (s, env', effEnv', SourceAnnotation span :< DeclLetF var (Just sch) texpr)
     DeclLetF var Nothing expr -> do
-      (s, texpr) <- inferTyEffExprTypedM sigmaE tyEnv effEnv expr
+      (s, texpr) <- inferTyEffExprTypedM sigmaE exprEnv effEnv expr
       -- T-LET-DECL purity premise.
       enforcePureLetRHS var (getEffect texpr)
       let env1 = substEnv s tyEnv
@@ -386,7 +403,7 @@ inferTyEffDeclM (Sigma sigma) sigmaE scope tyEnv effEnv declNode@(_ :< declF) = 
 -- already built are brought under the final θ before they are combined.
 -- Annotations inside the tree may lag behind: the component applies its final
 -- substitution to the whole tree (see 'substNode').
-inferTyEffExprTypedM :: SigmaE -> TyEnv -> Delta -> AnnotatedNode -> InferenceM (EffSubst, AnnotatedNode)
+inferTyEffExprTypedM :: SigmaE -> ExprEnv -> Delta -> AnnotatedNode -> InferenceM (EffSubst, AnnotatedNode)
 inferTyEffExprTypedM sigmaE env effEnv inputNode@(_ :< langF) = do
   -- Update context with current node information
   let span = getNodeSpan inputNode
@@ -395,7 +412,7 @@ inferTyEffExprTypedM sigmaE env effEnv inputNode@(_ :< langF) = do
   withSourceContext (Just span) exprText $ case langF of
     LangFExpr exprF -> case exprF of
       EVarF x ->
-        case Map.lookup x env of
+        case Map.lookup x (exprTypes env) of
           Just ty -> do
             instantiatedTy <- instantiateSchema ty
             noSubst $ NodeAnnotation span instantiatedTy EffNone :< LangFExpr (EVarF x)
@@ -407,8 +424,8 @@ inferTyEffExprTypedM sigmaE env effEnv inputNode@(_ :< langF) = do
         (s, tnode) <- inferTyEffJSXNodeTypedM sigmaE env effEnv node
         return (s, mkTypedExpr span THtml (getEffect tnode) (EJSXNodeF tnode))
       EArrowF vs param mTy body -> do
-        paramTy <- maybe (pure TAny) flexibleParamAnnotation mTy
-        let env' = Map.insert param paramTy env
+        let paramTy = maybe TAny (flexibleParamAnnotation env) mTy
+            env' = bindVar param paramTy env
         (s, tbody) <- inferTyEffExprTypedM sigmaE env' effEnv body
         let bodyTy = getType tbody
             bodyEff = getEffect tbody
@@ -438,14 +455,14 @@ inferTyEffExprTypedM sigmaE env effEnv inputNode@(_ :< langF) = do
           -- would compare binder lists that cannot match.
           TArrow (_ : _) _ _ _ -> do
             scoped <- asks scopedEffVars
-            let env1 = substEnv s1 env
-                ctx0 = contextFreeVars (Set.map Written scoped) env1
+            let env1 = substExprEnv s1 env
+                ctx0 = exprContextFreeVars (Set.map Written scoped) env1
                 (_, expected) = skolemise (Set.fromList [v | Written v <- toList ctx0]) argTy
             (s2, tx) <- inferTyEffExprTypedWithExpectedM sigmaE env1 effEnv (Just expected) x
             -- Besides Γ, the argument's own effect and the parameter's free
             -- variables (the function's, instantiated) belong to the context.
             let ctx = Set.unions
-                  [ contextFreeVars (Set.map Written scoped) (substEnv s2 env1)
+                  [ exprContextFreeVars (Set.map Written scoped) (substExprEnv s2 env1)
                   , freeEffVarsEffect (getEffect tx)
                   , freeEffVarsType (substType s2 argTy)
                   ]
@@ -461,7 +478,7 @@ inferTyEffExprTypedM sigmaE env effEnv inputNode@(_ :< langF) = do
                  <> "\n  Argument  " <> show (pretty inferred))
             pure (s2, tx, s3)
           _ -> do
-            (s2, tx) <- inferTyEffExprTypedWithExpectedM sigmaE (substEnv s1 env) effEnv (Just argTy) x
+            (s2, tx) <- inferTyEffExprTypedWithExpectedM sigmaE (substExprEnv s1 env) effEnv (Just argTy) x
             s3 <- unifyType (substType s2 argTy) (getType tx)
             pure (s2, tx, s3)
         let s = composeSubsts [s3, s2, s1]
@@ -469,9 +486,9 @@ inferTyEffExprTypedM sigmaE env effEnv inputNode@(_ :< langF) = do
         return (s, mkTypedExpr span (substType s retTy) appEff (EAppF tf tx))
       EIfF cond bThen bElse -> do
         (s1, tCond) <- inferTyEffExprTypedM sigmaE env effEnv cond
-        (s2, tThen) <- inferTyEffExprTypedM sigmaE (substEnv s1 env) effEnv bThen
+        (s2, tThen) <- inferTyEffExprTypedM sigmaE (substExprEnv s1 env) effEnv bThen
         let s12 = composeSubst s2 s1
-        (s3, tElse) <- inferTyEffExprTypedM sigmaE (substEnv s12 env) effEnv bElse
+        (s3, tElse) <- inferTyEffExprTypedM sigmaE (substExprEnv s12 env) effEnv bElse
         let s123 = composeSubst s3 s12
         condSubst <- unifyType TBool (substType s123 (getType tCond))
         let s1234 = composeSubst condSubst s123
@@ -483,7 +500,6 @@ inferTyEffExprTypedM sigmaE env effEnv inputNode@(_ :< langF) = do
             elseEff' = substEffect s (getEffect tElse)
             eff = effSeq condEff' (EffBranch thenEff' elseEff')
         return (s, mkTypedExpr span resultSch eff (EIfF tCond tThen tElse))
-      EEffectF eff -> noSubst $ mkTypedExpr span TUnit eff (EEffectF eff)
       EPairF e1 e2 -> do
         (s, tes) <- inferTyEffExprsM sigmaE env effEnv [e1, e2]
         let (te1, te2) = case tes of
@@ -552,26 +568,26 @@ inferTyEffExprTypedM sigmaE env effEnv inputNode@(_ :< langF) = do
 -- each is inferred under Γ with the substitution so far applied. The
 -- expressions' own types and effects are under their own substitutions only;
 -- apply the returned one to bring them up to date.
-inferTyEffExprsM :: SigmaE -> TyEnv -> Delta -> [AnnotatedNode] -> InferenceM (EffSubst, [AnnotatedNode])
+inferTyEffExprsM :: SigmaE -> ExprEnv -> Delta -> [AnnotatedNode] -> InferenceM (EffSubst, [AnnotatedNode])
 inferTyEffExprsM sigmaE env effEnv = go Map.empty []
   where
     go s acc [] = return (s, reverse acc)
     go s acc (e : es) = do
-      (s', te) <- inferTyEffExprTypedM sigmaE (substEnv s env) effEnv e
+      (s', te) <- inferTyEffExprTypedM sigmaE (substExprEnv s env) effEnv e
       go (composeSubst s' s) (te : acc) es
 
 -- | Type inference for JSX attributes, handling expressions in attribute
 -- values, left to right as 'inferTyEffExprsM' does.
-inferTyEffJSXAttrsM :: SigmaE -> TyEnv -> Delta -> [JSXAttr] -> InferenceM (EffSubst, [JSXAttr])
+inferTyEffJSXAttrsM :: SigmaE -> ExprEnv -> Delta -> [JSXAttr] -> InferenceM (EffSubst, [JSXAttr])
 inferTyEffJSXAttrsM sigmaE env effEnv = go Map.empty []
   where
     go s acc [] = return (s, reverse acc)
     go s acc (a : as) = do
-      (s', ta) <- inferTyEffJSXAttrM sigmaE (substEnv s env) effEnv a
+      (s', ta) <- inferTyEffJSXAttrM sigmaE (substExprEnv s env) effEnv a
       go (composeSubst s' s) (ta : acc) as
 
 -- | Type inference for a single JSX attribute
-inferTyEffJSXAttrM :: SigmaE -> TyEnv -> Delta -> JSXAttr -> InferenceM (EffSubst, JSXAttr)
+inferTyEffJSXAttrM :: SigmaE -> ExprEnv -> Delta -> JSXAttr -> InferenceM (EffSubst, JSXAttr)
 inferTyEffJSXAttrM sigmaE env effEnv (JSXAttr (name, value)) = case value of
   JSXAttrString text -> return (Map.empty, JSXAttr (name, JSXAttrString text))
   -- A JSX attribute is an ordinary expression: listeners are registered with
@@ -581,14 +597,14 @@ inferTyEffJSXAttrM sigmaE env effEnv (JSXAttr (name, value)) = case value of
     return (s, JSXAttr (name, JSXAttrExpr typedExpr))
 
 -- | Context-aware inference for expressions with expected type
-inferTyEffExprTypedWithExpectedM :: SigmaE -> TyEnv -> Delta -> Maybe Type -> AnnotatedNode -> InferenceM (EffSubst, AnnotatedNode)
+inferTyEffExprTypedWithExpectedM :: SigmaE -> ExprEnv -> Delta -> Maybe Type -> AnnotatedNode -> InferenceM (EffSubst, AnnotatedNode)
 inferTyEffExprTypedWithExpectedM sigmaE env effEnv mExpected inputNode@(_ :< langF) =
   let span = getNodeSpan inputNode
       exprText = Text.pack (show (pretty inputNode))
   in withSourceContext (Just span) exprText $ case langF of
     LangFExpr (EArrowF vs param Nothing body) -> case mExpected of
       Just (TArrow vs' argTy _ _) | length vs == length vs' -> do
-        let env' = Map.insert param argTy env
+        let env' = bindVar param argTy env
         (s, tbody) <- inferTyEffExprTypedM sigmaE env' effEnv body
         let bodyTy = getType tbody
         let bodyEff = getEffect tbody
@@ -609,7 +625,7 @@ inferTyEffExprTypedWithExpectedM sigmaE env effEnv mExpected inputNode@(_ :< lan
 -- @return e@ desugars to @let returnVar = e@). T-LET-DECL's purity premise is
 -- therefore what rejects an effectful expression inside JSX, and it can only do
 -- that if the effect reaches it.
-inferTyEffJSXNodeTypedM :: SigmaE -> TyEnv -> Delta -> AnnotatedNode -> InferenceM (EffSubst, AnnotatedNode)
+inferTyEffJSXNodeTypedM :: SigmaE -> ExprEnv -> Delta -> AnnotatedNode -> InferenceM (EffSubst, AnnotatedNode)
 inferTyEffJSXNodeTypedM sigmaE env effEnv node@(_ :< langF) = do
   let span = getNodeSpan node
       typedNode eff = (NodeAnnotation span THtml eff :<)
@@ -617,7 +633,7 @@ inferTyEffJSXNodeTypedM sigmaE env effEnv node@(_ :< langF) = do
     LangFJSXNode jsxF -> case jsxF of
       JSXElementNodeF tag attrs children -> do
         (s1, tChildren) <- inferTyEffExprsM sigmaE env effEnv children
-        (s2, tAttrs) <- inferTyEffJSXAttrsM sigmaE (substEnv s1 env) effEnv attrs
+        (s2, tAttrs) <- inferTyEffJSXAttrsM sigmaE (substExprEnv s1 env) effEnv attrs
         let s = composeSubst s2 s1
             eff = seqMany (map (substEffect s) (jsxAttrEffects tAttrs ++ map getEffect tChildren))
         return (s, typedNode eff (LangFJSXNode (JSXElementNodeF tag tAttrs tChildren)))
@@ -734,6 +750,18 @@ substEnv :: EffSubst -> TyEnv -> TyEnv
 substEnv s env
   | Map.null s = env
   | otherwise = Map.map (substType s) env
+
+-- | Apply a substitution to an expression's context: to Γ, and to Φ, so
+-- that the variable Φ gives an annotation name is under the substitution so
+-- far, as every type in Γ is.
+substExprEnv :: EffSubst -> ExprEnv -> ExprEnv
+substExprEnv s (ExprEnv env phi)
+  | Map.null s = ExprEnv env phi
+  | otherwise = ExprEnv (substEnv s env) (Map.map (substEffect s) phi)
+
+-- | Bind a variable in Γ.
+bindVar :: Text -> Type -> ExprEnv -> ExprEnv
+bindVar x ty env = env {exprTypes = Map.insert x ty (exprTypes env)}
 
 -- | Apply a substitution to every cascade in Δ.
 substDelta :: EffSubst -> Delta -> Delta
@@ -969,6 +997,12 @@ freeEffVarsType ty = case ty of
 contextFreeVars :: Set EffVarKey -> TyEnv -> Set EffVarKey
 contextFreeVars scope env = Set.unions (scope : map freeEffVarsType (Map.elems env))
 
+-- | The effect variables free in an expression's context: those of Γ and
+-- @scope@ (see 'contextFreeVars'), and those Φ maps annotation names to.
+exprContextFreeVars :: Set EffVarKey -> ExprEnv -> Set EffVarKey
+exprContextFreeVars scope (ExprEnv env phi) =
+  Set.unions (contextFreeVars scope env : map freeEffVarsEffect (Map.elems phi))
+
 -- | Hindley–Milner generalisation, @gen(Γ, τ) = ∀(fev(τ) ∖ fev(Γ)). τ@, given
 -- @fev(Γ)@. A written variable keeps its name as the binder. A unification
 -- variable is replaced by a new written one (@e3@ for @?_e3@, renamed if
@@ -1030,27 +1064,56 @@ skolemise avoid sch = case sch of
 
 -- | A λ-parameter annotation, read as a type annotation is in OCaml: a
 -- written variable that no enclosing scope binds stands for whatever effect it
--- meets, so it becomes a unification variable. There is one such variable per
--- name for the whole enclosing declaration (one @let@, @state@ default or @on@
--- block), shared by every annotation in it that mentions the name, since
--- Willow has no shadowing that could rebind it; generalising a @let@ then
--- quantifies it. Variables the component binds stay rigid, and a @forall@
--- inside the annotation keeps its own binders ('substType' skips them).
-flexibleParamAnnotation :: Type -> InferenceM Type
-flexibleParamAnnotation ty = do
-  scoped <- asks scopedEffVars
-  ref <- asks annotationEffVars
-  let unbound = [v | Written v <- toList (freeEffVarsType ty), v `Set.notMember` scoped]
-  fresh <- forM unbound $ \v -> do
-    known <- Map.lookup v <$> readIORef ref
-    e <- case known of
-      Just e -> pure e
-      Nothing -> do
-        e <- EffUnif <$> freshUnifVar
-        modifyIORef' ref (Map.insert v e)
-        pure e
-    pure (Written v, e)
-  pure (substType (Map.fromList fresh) ty)
+-- meets, so it is replaced by what Φ maps it to. Φ has one unification
+-- variable per such name for the whole enclosing declaration (one @let@,
+-- @state@ default or @on@ block), shared by every annotation in it that
+-- mentions the name, since Willow has no shadowing that could rebind it;
+-- generalising a @let@ then quantifies it. Φ is under the substitution so far,
+-- so a later annotation sees what an earlier use of the name has fixed.
+-- Variables the component binds stay rigid (Φ has no entry for them), and a
+-- @forall@ inside the annotation keeps its own binders ('substType' skips
+-- them).
+flexibleParamAnnotation :: ExprEnv -> Type -> Type
+flexibleParamAnnotation env =
+  substType (Map.mapKeys Written (exprAnnotationVars env))
+
+-- | The expressions of a declaration.
+declExprs :: DeclarationF r -> [AnnotatedNode]
+declExprs declF = case declF of
+  DeclStateF _ _ e -> [e]
+  DeclEffectF _ (Block es) -> es
+  DeclLetF _ _ e -> [e]
+  DeclSubCompF {} -> []
+
+-- | The λ-parameter annotations in an expression, in source order.
+lambdaAnnotations :: AnnotatedNode -> [Type]
+lambdaAnnotations = cata alg
+  where
+    alg (_ CFT.:< langF) = case langF of
+      LangFExpr exprF -> case exprF of
+        EArrowF _ _ mTy body -> maybeToList mTy ++ body
+        EJSXNodeF node -> node
+        EAppF f x -> f ++ x
+        EIfF c t e -> c ++ t ++ e
+        EPairF e1 e2 -> e1 ++ e2
+        EPairAccessF e _ -> e
+        EBindF _ e -> e
+        EOnceF _ e -> e
+        EVarF _ -> []
+        ELitIntF _ -> []
+        ELitStringF _ -> []
+        ELitBoolF _ -> []
+        ECancelF _ -> []
+        ERemoveF _ -> []
+      LangFJSXNode jsxF -> case jsxF of
+        JSXElementNodeF _ attrs children -> concatMap attr attrs ++ concat children
+        JSXSelfClosingNodeF _ attrs -> concatMap attr attrs
+      LangFJSXChild childF -> case childF of
+        ChildTextF _ -> []
+        ChildExprF e -> e
+        ChildNodeF n -> n
+    attr (JSXAttr (_, JSXAttrExpr e)) = lambdaAnnotations e
+    attr (JSXAttr (_, JSXAttrString _)) = []
 
 -- | Recover from an inference failure.
 catchInference :: InferenceM a -> (InferenceError -> InferenceM a) -> InferenceM a

@@ -77,7 +77,7 @@ module Types
     isIdempotentEffect,
     -- Migration helper functions
     mkVar, mkLitInt, mkLitString, mkLitBool,
-    mkApp, mkIf, mkArrow, mkEffect, mkPair, mkPairAccess,
+    mkApp, mkIf, mkArrow, mkPair, mkPairAccess,
     mkJSXElement, mkJSXSelfClosing, mkChildText, mkChildExpr, mkChildNode, mkJSXNode,
     mkDeclState, mkDeclEffect, mkDeclLet, mkDeclSubComp,
     mkComponent, mkEventDecl, mkProgram, mkTypedExpr,
@@ -239,7 +239,6 @@ data ExprF r
   | EArrowF [EffVarName] Text (Maybe Type) r
   | EAppF r r
   | EIfF r r r
-  | EEffectF Effect
   | EPairF r r
   | EPairAccessF r Int
   | EBindF EventLabel r   -- ^ @bind ℓ⟨v⟩ e@ — register a persistent listener
@@ -786,7 +785,6 @@ prettyExprF (EArrowF _ param (Just sch) body) =
 prettyExprF (EAppF f x) = pretty f <+> pretty x
 prettyExprF (EIfF cond thenExpr elseExpr) =
   pretty cond <+> "?" <+> pretty thenExpr <+> ":" <+> pretty elseExpr
-prettyExprF (EEffectF eff) = "effect" <+> pretty eff
 prettyExprF (EPairF e1 e2) = pretty e1 <+> "," <+> pretty e2
 prettyExprF (EPairAccessF e ix) = pretty e <> "." <> pretty ix
 prettyExprF (EBindF lbl e) = "bind" <+> pretty lbl <+> pretty e
@@ -925,7 +923,6 @@ showExprF (EJSXNodeF n) = "EJSXNodeF (" ++ showAnnotatedNode n ++ ")"
 showExprF (EArrowF effs p mt b) = "EArrowF " ++ show effs ++ " " ++ show p ++ " " ++ show mt ++ " (" ++ showAnnotatedNode b ++ ")"
 showExprF (EAppF f x) = "EAppF (" ++ showAnnotatedNode f ++ ") (" ++ showAnnotatedNode x ++ ")"
 showExprF (EIfF c t e) = "EIfF (" ++ showAnnotatedNode c ++ ") (" ++ showAnnotatedNode t ++ ") (" ++ showAnnotatedNode e ++ ")"
-showExprF (EEffectF eff) = "EEffectF " ++ show eff
 showExprF (EPairF a b) = "EPairF (" ++ showAnnotatedNode a ++ ") (" ++ showAnnotatedNode b ++ ")"
 showExprF (EPairAccessF e ix) = "EPairAccessF (" ++ showAnnotatedNode e ++ ") " ++ show ix
 showExprF (EBindF lbl e) = "EBindF " ++ show lbl ++ " (" ++ showAnnotatedNode e ++ ")"
@@ -942,7 +939,6 @@ eqExprF (EJSXNodeF n1) (EJSXNodeF n2) = eqAnnotatedNode n1 n2
 eqExprF (EArrowF effs1 p1 mt1 b1) (EArrowF effs2 p2 mt2 b2) = effs1 == effs2 && p1 == p2 && mt1 == mt2 && eqAnnotatedNode b1 b2
 eqExprF (EAppF f1 x1) (EAppF f2 x2) = eqAnnotatedNode f1 f2 && eqAnnotatedNode x1 x2
 eqExprF (EIfF c1 t1 e1) (EIfF c2 t2 e2) = eqAnnotatedNode c1 c2 && eqAnnotatedNode t1 t2 && eqAnnotatedNode e1 e2
-eqExprF (EEffectF eff1) (EEffectF eff2) = eff1 == eff2
 eqExprF (EPairF a1 b1) (EPairF a2 b2) = eqAnnotatedNode a1 a2 && eqAnnotatedNode b1 b2
 eqExprF (EPairAccessF e1 ix1) (EPairAccessF e2 ix2) = eqAnnotatedNode e1 e2 && ix1 == ix2
 eqExprF (EBindF l1 e1) (EBindF l2 e2) = l1 == l2 && eqAnnotatedNode e1 e2
@@ -961,7 +957,6 @@ compareExprF (EArrowF effs1 p1 mt1 b1) (EArrowF effs2 p2 mt2 b2) =
   compare (effs1, p1, mt1) (effs2, p2, mt2) <> compareAnnotatedNode b1 b2
 compareExprF (EAppF f1 x1) (EAppF f2 x2) = compareAnnotatedNode f1 f2 <> compareAnnotatedNode x1 x2
 compareExprF (EIfF c1 t1 e1) (EIfF c2 t2 e2) = compareAnnotatedNode c1 c2 <> compareAnnotatedNode t1 t2 <> compareAnnotatedNode e1 e2
-compareExprF (EEffectF eff1) (EEffectF eff2) = compare eff1 eff2
 compareExprF (EPairF a1 b1) (EPairF a2 b2) = compareAnnotatedNode a1 a2 <> compareAnnotatedNode b1 b2
 compareExprF (EPairAccessF e1 ix1) (EPairAccessF e2 ix2) = compareAnnotatedNode e1 e2 <> compare ix1 ix2
 compareExprF (EBindF l1 e1) (EBindF l2 e2) = compare l1 l2 <> compareAnnotatedNode e1 e2
@@ -978,13 +973,12 @@ compareExprF a b = compare (tagExprF a) (tagExprF b)
     tagExprF (EArrowF{}) = 5
     tagExprF (EAppF{}) = 6
     tagExprF (EIfF{}) = 7
-    tagExprF (EEffectF{}) = 8
-    tagExprF (EPairF{}) = 9
-    tagExprF (EPairAccessF{}) = 10
-    tagExprF (EBindF{}) = 11
-    tagExprF (EOnceF{}) = 12
-    tagExprF (ECancelF{}) = 13
-    tagExprF (ERemoveF{}) = 14
+    tagExprF (EPairF{}) = 8
+    tagExprF (EPairAccessF{}) = 9
+    tagExprF (EBindF{}) = 10
+    tagExprF (EOnceF{}) = 11
+    tagExprF (ECancelF{}) = 12
+    tagExprF (ERemoveF{}) = 13
 
 -- JSXNodeF functions
 showJSXNodeF :: JSXNodeF AnnotatedNode -> String
@@ -1121,10 +1115,6 @@ mkIf (Just s) cond t e = s :< LangFExpr (EIfF cond t e)
 mkArrow :: Maybe NodeAnnotation -> Text -> Maybe Type -> AnnotatedNode -> AnnotatedNode
 mkArrow Nothing param schema body = dummyNodeAnnotation :< LangFExpr (EArrowF [] param schema body)
 mkArrow (Just s) param schema body = s :< LangFExpr (EArrowF [] param schema body)
-
-mkEffect :: Maybe NodeAnnotation -> Effect -> AnnotatedNode
-mkEffect Nothing eff = dummyNodeAnnotation :< LangFExpr (EEffectF eff)
-mkEffect (Just s) eff = s :< LangFExpr (EEffectF eff)
 
 mkPair :: Maybe NodeAnnotation -> AnnotatedNode -> AnnotatedNode -> AnnotatedNode
 mkPair Nothing e1 e2 = dummyNodeAnnotation :< LangFExpr (EPairF e1 e2)
