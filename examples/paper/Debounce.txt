@@ -1,8 +1,11 @@
 comp Debounce (value: int) : int {
   state slow, setSlow default value;
+  state pending, setPending default false;
   on value do {
-    clearTimeout();
+    (pending ? clearTimeout() : ());
+    setPending((p: bool) => {true});
     setTimeout((u: unit) => {
+      setPending((p: bool) => {false}) ;;
       setSlow((v: int) => {value})
     })
   };
@@ -13,13 +16,25 @@ comp Debounce (value: int) : int {
 
 The paper's (§2) Debounce encoding, on the event layer. Target cascade of value:
 
-  cancel timeout<> * remove timeout<>
-    * eventually timeout<> {after 1r {@slow}}
+  ((cancel timeout<> * remove timeout<>) + none)
+    * after 1r {@pending}
+    * eventually timeout<> {after 1r {@pending} * after 1r {@slow}}
     * after 100ms {timeout<>}
 
-(paper glyphs: ⊘timeout⟨⟩ * ✗timeout⟨⟩ * ◇timeout⟨⟩(○¹ʳ @slow) * ○¹⁰⁰ᵐˢ timeout⟨⟩)
+(paper glyphs: (⊘timeout⟨⟩ * ✗timeout⟨⟩ + ·) * ○¹ʳ @pending
+  * ◇timeout⟨⟩(○¹ʳ @pending * ○¹ʳ @slow) * ○¹⁰⁰ᵐˢ timeout⟨⟩)
 
-Reading: when value changes, any pending timeout<> is cancelled and its
-handlers removed; a fresh timeout<> is scheduled 100ms out; contingent on it
-firing, slow may change next render.
+Reading: when value changes, a timer that is still pending is cancelled and
+its handlers removed; a fresh timeout<> is scheduled 100ms out; contingent on
+it firing, pending is reset and slow may change next render.
+
+Why pending: cancel timeout<> drops the next firing of timeout<> whether or
+not one is scheduled. Clearing unconditionally (on mount, or after a pause
+longer than 100ms) would leave a cancellation behind that eats the following
+timer, so slow would never update. The pending flag clears only while a timer
+is live.
+
+Adaptations: the paper's `if pending then clearTimeout() else ()` is written
+with the conditional expression `c ? e1 : e2`, and the timer body sequences
+its two setter calls with `;;`.
 */

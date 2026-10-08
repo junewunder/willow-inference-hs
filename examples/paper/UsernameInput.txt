@@ -2,9 +2,12 @@ event change<#name> : string;
 
 comp Debounce (value: string) : string {
   state slow, setSlow default value;
+  state pending, setPending default false;
   on value do {
-    clearTimeout();
+    (pending ? clearTimeout() : ());
+    setPending((p: bool) => {true});
     setTimeout((uu: unit) => {
+      setPending((p: bool) => {false}) ;;
       setSlow((v: string) => {value})
     })
   };
@@ -133,8 +136,11 @@ Inferred cascades for UsernameInput (asserted in test/PaperExamplesSpec.hs):
              * always change<#name> {after 1r {@username}}
   username | @slowUsername.value
   slowUsername.value |
-        cancel timeout<> * remove timeout<>
-      * eventually timeout<> {after 1r {@slowUsername.slow}}
+        ((cancel timeout<> * remove timeout<>) + none)
+      * after 1r {@slowUsername.pending}
+      * eventually timeout<> {
+          after 1r {@slowUsername.pending} * after 1r {@slowUsername.slow}
+        }
       * after 100ms {timeout<>}
   slowUsername |
         after 1r {@status}                                   -- then: "idle"

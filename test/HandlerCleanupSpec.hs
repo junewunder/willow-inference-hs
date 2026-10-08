@@ -70,7 +70,7 @@ spec = describe "Event handler cleanup analysis (§5.4)" $ do
         `shouldBe` [(timerLbl, OneShot)]
 
     it "clearTimeout's ⊘ * ✗ pair does discharge it" $ do
-      -- Debounce's cascade: ⊘timeout⟨⟩ * ✗timeout⟨⟩ * ◇timeout⟨⟩(○¹ʳ @slow)
+      -- An unguarded debounce cascade: ⊘timeout⟨⟩ * ✗timeout⟨⟩ * ◇timeout⟨⟩(○¹ʳ @slow)
       --   * ○¹⁰⁰ᵐˢ timeout⟨⟩
       let eff = EffSeq
             [ EffCancel timerLbl

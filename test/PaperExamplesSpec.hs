@@ -155,25 +155,32 @@ spec = describe "Paper worked examples" $ do
     -- Paper source (§2):
     --   comp Debounce (value: any) : any {
     --     state slow, setSlow default value;
+    --     state pending, setPending default false;
     --     on value do {
-    --       clearTimeout();
-    --       setTimeout(λ_. setSlow(λ_. value))
+    --       if pending then clearTimeout() else ();
+    --       setPending(λ_. true);
+    --       setTimeout(λ_. (setPending(λ_. false); setSlow(λ_. value)))
     --     };
     --     return slow;
     --   }
     -- Builtin types: setTimeout f : ◇timeout⟨⟩(F_f) * ○¹⁰⁰ᵐˢ timeout⟨⟩
     --                clearTimeout() : ⊘timeout⟨⟩ * ✗timeout⟨⟩
     -- Target cascade of value:
-    --   ⊘timeout⟨⟩ * ✗timeout⟨⟩ * ◇timeout⟨⟩(○¹ʳ @slow) * ○¹⁰⁰ᵐˢ timeout⟨⟩
+    --   (⊘timeout⟨⟩ * ✗timeout⟨⟩ + ·) * ○¹ʳ @pending
+    --     * ◇timeout⟨⟩(○¹ʳ @pending * ○¹ʳ @slow) * ○¹⁰⁰ᵐˢ timeout⟨⟩
+    -- (pending guards the clear: ⊘ drops the next firing whether or not one
+    -- is scheduled, so an unguarded clear would eat the following timer.)
     -- (The older, counter-based encoding — setTimeout(…) + numSeen/numAged
     -- states — is tested in InferAnnotatedSpec; this is the paper's version.
     -- Same program also lives in examples/paper/Debounce.txt.)
     (sigma, _typedComps) <- inferSource $ Text.unlines
       [ "comp Debounce(value: int) : int {"
       , "  state slow, setSlow default value;"
+      , "  state pending, setPending default false;"
       , "  on value do {"
-      , "    clearTimeout();"
-      , "    setTimeout((u: unit) => { setSlow((v: int) => { value }) })"
+      , "    (pending ? clearTimeout() : ());"
+      , "    setPending((p: bool) => { true });"
+      , "    setTimeout((u: unit) => { setPending((p: bool) => { false }) ;; setSlow((v: int) => { value }) })"
       , "  };"
       , "  return slow;"
       , "}"
@@ -181,9 +188,13 @@ spec = describe "Paper worked examples" $ do
     let lbl = EventLabel "timeout" []
     cascadeOf sigma "Debounce" "value"
       `shouldBe` EffSeq
-        [ EffCancel lbl
-        , EffRemove lbl
-        , EffEventually lbl (EffAfter (Time 1 Renders) (EffStateChange "slow"))
+        [ EffBranch (EffSeq [EffCancel lbl, EffRemove lbl]) EffNone
+        , EffAfter (Time 1 Renders) (EffStateChange "pending")
+        , EffEventually lbl
+            (EffSeq
+              [ EffAfter (Time 1 Renders) (EffStateChange "pending")
+              , EffAfter (Time 1 Renders) (EffStateChange "slow")
+              ])
         , EffAfter (Time 100 Millis) (EffEvent lbl)
         ]
 
@@ -220,10 +231,13 @@ spec = describe "Paper worked examples" $ do
     fullEffectVar d "input"
       `shouldBe` EffSeq
         [ at "slowInput.value"
-        , EffCancel lbl
-        , EffRemove lbl
+        , EffBranch (EffSeq [EffCancel lbl, EffRemove lbl]) EffNone
+        , after1r (at "slowInput.pending")
         , EffEventually lbl
-            (after1r (EffSeq [at "slowInput.slow", at "slowInput", EffAfter (Time 1 NetworkReq) EffNone]))
+            (EffSeq
+              [ after1r (at "slowInput.pending")
+              , after1r (EffSeq [at "slowInput.slow", at "slowInput", EffAfter (Time 1 NetworkReq) EffNone])
+              ])
         , EffAfter (Time 100 Millis) (EffEvent lbl)
         ]
 
@@ -368,13 +382,14 @@ spec = describe "Paper worked examples" $ do
       cascadeOf sigma "UsernameInput" "username"
         `shouldBe` at "slowUsername.value"
       -- … and slowUsername.value carries the debounce body itself, with slow
-      -- renamed to slowUsername.slow inside the ◇ guard.
+      -- and pending renamed to slowUsername.slow and slowUsername.pending.
       let lbl = EventLabel "timeout" []
       cascadeOf sigma "UsernameInput" "slowUsername.value"
         `shouldBe` EffSeq
-          [ EffCancel lbl
-          , EffRemove lbl
-          , EffEventually lbl (after1r (at "slowUsername.slow"))
+          [ EffBranch (EffSeq [EffCancel lbl, EffRemove lbl]) EffNone
+          , after1r (at "slowUsername.pending")
+          , EffEventually lbl
+              (EffSeq [after1r (at "slowUsername.pending"), after1r (at "slowUsername.slow")])
           , EffAfter (Time 100 Millis) (EffEvent lbl)
           ]
 

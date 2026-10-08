@@ -66,8 +66,8 @@ examples =
         ]
     )
   , ("sequence inside a branch", EffBranch EffNone (mkEffSeq [EffStateChange "a", EffStateChange "b"]))
-  , -- Debounce's inferred cascade: the smallest real effect that does not fit
-    -- on one 80-column line.
+  , -- An unguarded clear-then-set debounce cascade: the smallest real effect
+    -- that does not fit on one 80-column line.
     ( "the Debounce cascade"
     , mkEffSeq
         [ EffCancel (EventLabel "timeout" [])

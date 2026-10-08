@@ -193,15 +193,18 @@ schedules alongside synchronous render counts. A debounce, for instance
 
 ```
   on value:
-        cancel timeout<>
-      * remove timeout<>
-      * eventually timeout<> {after 1r {@slow}}
+        ((cancel timeout<> * remove timeout<>) + none)
+      * after 1r {@pending}
+      * eventually timeout<> {after 1r {@pending} * after 1r {@slow}}
       * after 100ms {timeout<>}
 ```
 
-which reads: when `value` changes, (1) any pending `timeout<>` is cancelled and its
-handlers unregistered, (2) a fresh `timeout<>` is scheduled to fire after 100ms, and
-(3) contingent on it firing, `slow` may change in the next render.
+which reads: when `value` changes, (1) if a timer is pending, its `timeout<>` is
+cancelled and its handlers unregistered, (2) a fresh `timeout<>` is scheduled to fire
+after 100ms, and (3) contingent on it firing, `pending` is reset and `slow` may change
+in the next render. The `pending` flag is needed because `cancel timeout<>` drops the
+next firing of `timeout<>` whether or not one is scheduled, so an unguarded clear would
+eat the following timer.
 
 The payoff is that such protection **survives composition**. If a parent watches the
 debounced `slow` value and issues a network request from it, the request's effect carries
@@ -376,7 +379,9 @@ stack exec -- willow-hs-exe --first examples/paper/Debounce.txt
 ```
 === Initial Render Analysis ===
 comp Debounce
-  settles: nothing (no state changes on mount)
+  settles:
+      after 1r {@pending}
+  settle time: 1r
   arms:
     eventually timeout<> — body waits for the event
   schedules:
@@ -430,8 +435,13 @@ comp StaleListenerFixed
 ```
 
 Note that `cancel ℓ⟨v⟩` does not discharge a registration: cancelling suppresses one
-pending firing of the event, while `remove` is what unregisters the handlers. All five
-examples in `examples/paper/` come out clean under this check.
+pending firing of the event, while `remove` is what unregisters the handlers. Nor does a
+firing: the check does not credit a one-shot `eventually ℓ⟨v⟩` with being consumed when
+`ℓ⟨v⟩` fires, which is the conservative direction. `MovingDot`, `MutualRecursion` and
+`TextInput` in `examples/paper/` come out clean. `Debounce`, and `UsernameInput`
+through it, get a warning on the branch where no timer is pending: there the fresh
+`eventually timeout<>` has no `remove` on its path, though the previous handler has
+already fired and been consumed.
 
 ### When a program doesn't check
 
