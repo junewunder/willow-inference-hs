@@ -1,5 +1,7 @@
 # Willow — agent guide
 
+Visibility: public (github.com/junewunder/willow-inference-hs)
+
 Willow is a type-and-effect checker for a small React-like language: it infers, per
 component, both a type and a **timing effect** (which state changes happen, how long
 they take, whether they cascade into an inter-render loop). Haskell, built with Stack.
