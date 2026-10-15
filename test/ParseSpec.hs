@@ -3,7 +3,7 @@ module ParseSpec (spec) where
 import Import
 import Parse
 import Test.Hspec
-import Text.Megaparsec (runParser, initialPos, SourcePos(..), mkPos, unPos)
+import Text.Megaparsec (initialPos, SourcePos(..), mkPos, unPos)
 import qualified RIO.Text as Text
 import Import
 import Control.Comonad.Cofree (Cofree(..))
@@ -21,7 +21,7 @@ spec = do
               , "  return x;"
               , "}"
               ]
-        case runParser pComponent "test" compCode of
+        case runAnnotatedParser False pComponent "test" compCode of
           Left err -> expectationFailure $ "Parse failed: " <> show err
           Right annotatedComp -> do
             getComponentName annotatedComp `shouldBe` "IntLiteral"
@@ -35,7 +35,7 @@ spec = do
               , "  return x;"
               , "}"
               ]
-        case runParser pComponent "test" compCode of
+        case runAnnotatedParser False pComponent "test" compCode of
           Left err -> expectationFailure $ "Parse failed: " <> show err
           Right annotatedComp -> do
             getComponentName annotatedComp `shouldBe` "BoolTest"
@@ -47,7 +47,7 @@ spec = do
               , "  return greeting;"
               , "}"
               ]
-        case runParser pComponent "test" compCode of
+        case runAnnotatedParser False pComponent "test" compCode of
           Left err -> expectationFailure $ "Parse failed: " <> show err
           Right annotatedComp -> do
             getComponentName annotatedComp `shouldBe` "StringTest"
@@ -60,7 +60,7 @@ spec = do
               , "  return y;"
               , "}"
               ]
-        case runParser pComponent "test" compCode of
+        case runAnnotatedParser False pComponent "test" compCode of
           Left err -> expectationFailure $ "Parse failed: " <> show err
           Right annotatedComp -> do
             getComponentName annotatedComp `shouldBe` "VarTest"
@@ -73,7 +73,7 @@ spec = do
               , "  return result;"
               , "}"
               ]
-        case runParser pComponent "test" compCode of
+        case runAnnotatedParser False pComponent "test" compCode of
           Left err -> expectationFailure $ "Parse failed: " <> show err
           Right annotatedComp -> do
             getComponentName annotatedComp `shouldBe` "FuncApp"
@@ -86,14 +86,14 @@ spec = do
               , "  return result;"
               , "}"
               ]
-        case runParser pComponent "test" compCode of
+        case runAnnotatedParser False pComponent "test" compCode of
           Left err -> expectationFailure $ "Parse failed: " <> show err
           Right annotatedComp -> do
             getComponentName annotatedComp `shouldBe` "ArrowFunc"
 
       it "fails to parse invalid syntax" $ do
         let badCode = "comp Bad() : int { let x = ; return x; }"
-        case runParser pComponent "test" badCode of
+        case runAnnotatedParser False pComponent "test" badCode of
           Left err -> show err `shouldContain` "TrivialError"
           Right _ -> expectationFailure "Should have failed to parse"
 
@@ -106,7 +106,7 @@ spec = do
               , "  return x;"
               , "}"
               ]
-        case runParser pComponent "test" compCode of
+        case runAnnotatedParser False pComponent "test" compCode of
           Left err -> expectationFailure $ "Parse failed: " <> show err
           Right annotatedComp -> do
             getComponentName annotatedComp `shouldBe` "SimpleComponent"
@@ -119,7 +119,7 @@ spec = do
               , "  return count;"
               , "}"
               ]
-        case runParser pComponent "test" compCode of
+        case runAnnotatedParser False pComponent "test" compCode of
           Left err -> expectationFailure $ "Parse failed: " <> show err
           Right annotatedComp -> do
             getComponentName annotatedComp `shouldBe` "Counter"
@@ -132,7 +132,7 @@ spec = do
               , "  return result;"
               , "}"
               ]
-        case runParser pComponent "test" compCode of
+        case runAnnotatedParser False pComponent "test" compCode of
           Left err -> expectationFailure $ "Parse failed: " <> show err
           Right annotatedComp -> do
             getComponentName annotatedComp `shouldBe` "WithParams"
@@ -145,14 +145,14 @@ spec = do
               , "  return count;"
               , "}"
               ]
-        case runParser pComponent "test" compCode of
+        case runAnnotatedParser False pComponent "test" compCode of
           Left err -> show err `shouldContain` "Label"
           Right _ -> expectationFailure "Should have failed to parse"
 
   describe "Event-layer effect syntax" $ do
     it "parses modalities inside a type schema" $ do
       let schemaCode = "forall e. (unit -> unit | e) -> unit | eventually timeout<> {e} * after 100ms {timeout<>}"
-      case runParser pType "test" schemaCode of
+      case runAnnotatedParser False pType "test" schemaCode of
         Left err -> expectationFailure $ "Parse failed: " <> show err
         Right (TArrow _ _ _ latent) ->
           -- Hand-built EffSeq literal (not mkEffSeq): pEffect itself builds via
@@ -165,7 +165,7 @@ spec = do
         Right other -> expectationFailure $ "Expected a TArrow, got: " <> show other
 
     it "parses cancel/remove effects in a sequence" $ do
-      case runParser pEffect "test" "cancel click<#doc> * remove click<#doc>" of
+      case runAnnotatedParser False pEffect "test" "cancel click<#doc> * remove click<#doc>" of
         Left err -> expectationFailure $ "Parse failed: " <> show err
         Right eff ->
           eff `shouldBe`
@@ -175,43 +175,43 @@ spec = do
               ]
 
     it "parses the always modality with a braced body" $ do
-      case runParser pEffect "test" "always click<#doc> {@x}" of
+      case runAnnotatedParser False pEffect "test" "always click<#doc> {@x}" of
         Left err -> expectationFailure $ "Parse failed: " <> show err
         Right eff ->
           eff `shouldBe` EffAlways (EventLabel "click" ["#doc"]) (EffStateChange "x")
 
     it "parses a bare event effect with a multi-value tuple" $ do
-      case runParser pEffect "test" "req<check,suc>" of
+      case runAnnotatedParser False pEffect "test" "req<check,suc>" of
         Left err -> expectationFailure $ "Parse failed: " <> show err
         Right eff ->
           eff `shouldBe` EffEvent (EventLabel "req" ["check", "suc"])
 
     it "parses label values with URL-style characters (spec: values are base values, e.g. URLs)" $ do
-      case runParser pEffect "test" "req<api.users/v2>" of
+      case runAnnotatedParser False pEffect "test" "req<api.users/v2>" of
         Left err -> expectationFailure $ "Parse failed: " <> show err
         Right eff ->
           eff `shouldBe` EffEvent (EventLabel "req" ["api.users/v2"])
 
     it "still parses a bare identifier as an effect variable" $ do
-      case runParser pEffect "test" "e" of
+      case runAnnotatedParser False pEffect "test" "e" of
         Left err -> expectationFailure $ "Parse failed: " <> show err
         Right eff -> eff `shouldBe` EffVar (EffVarName "e")
 
     it "does NOT misparse event kinds whose name starts with a modality keyword" $ do
       -- Regression: 'symbol "cancel"' used to consume the keyword prefix of
       -- 'cancelled', silently turning the event into a cancellation.
-      case runParser pEffect "test" "cancelled<x>" of
+      case runAnnotatedParser False pEffect "test" "cancelled<x>" of
         Left err -> expectationFailure $ "Parse failed: " <> show err
         Right eff -> eff `shouldBe` EffEvent (EventLabel "cancelled" ["x"])
-      case runParser pEffect "test" "removeAll<y>" of
+      case runAnnotatedParser False pEffect "test" "removeAll<y>" of
         Left err -> expectationFailure $ "Parse failed: " <> show err
         Right eff -> eff `shouldBe` EffEvent (EventLabel "removeAll" ["y"])
 
     it "falls back to EffVar for a modality keyword not followed by a label" $ do
-      case runParser pEffect "test" "always" of
+      case runAnnotatedParser False pEffect "test" "always" of
         Left err -> expectationFailure $ "Parse failed: " <> show err
         Right eff -> eff `shouldBe` EffVar (EffVarName "always")
-      case runParser pEffect "test" "cancel" of
+      case runAnnotatedParser False pEffect "test" "cancel" of
         Left err -> expectationFailure $ "Parse failed: " <> show err
         Right eff -> eff `shouldBe` EffVar (EffVarName "cancel")
 
@@ -223,7 +223,7 @@ spec = do
             , "  return ();"
             , "}"
             ]
-      case runParser pProgram "test" progCode of
+      case runAnnotatedParser False pProgram "test" progCode of
         Left err -> expectationFailure $ "Parse failed: " <> show err
         Right prog -> case prog of
           (_ :< ProgramF eventDecls comps) -> do
@@ -245,7 +245,7 @@ spec = do
             , "  return ();"
             , "}"
             ]
-      case runParser pProgram "test" progCode of
+      case runAnnotatedParser False pProgram "test" progCode of
         Left err -> expectationFailure $ "Parse failed: " <> show err
         Right prog -> case prog of
           (_ :< ProgramF eventDecls comps) -> do
@@ -265,7 +265,7 @@ spec = do
             , "  return ();"
             , "}"
             ]
-      case runParser pProgram "test" progCode of
+      case runAnnotatedParser False pProgram "test" progCode of
         Left err -> expectationFailure $ "Parse failed: " <> show err
         Right prog -> case prog of
           (_ :< ProgramF _ [(_ :< ComponentF _ _ _ decls _ _)]) -> do
@@ -300,7 +300,7 @@ spec = do
             , "  return remove;"
             , "}"
             ]
-      case runParser pProgram "test" progCode of
+      case runAnnotatedParser False pProgram "test" progCode of
         Left err -> expectationFailure $ "Parse failed: " <> show err
         Right prog -> case prog of
           (_ :< ProgramF [] [(_ :< ComponentF _ _ _ decls ret _)]) -> do
@@ -327,7 +327,7 @@ spec = do
             , "  return cancelled;"
             , "}"
             ]
-      case runParser pProgram "test" progCode of
+      case runAnnotatedParser False pProgram "test" progCode of
         Left err -> expectationFailure $ "Parse failed: " <> show err
         Right prog -> case prog of
           (_ :< ProgramF [] [(_ :< ComponentF _ _ _ decls ret _)]) -> do
@@ -340,7 +340,7 @@ spec = do
 
   describe "Compute time unit + asyncCompute schema" $ do
     it "parses the u (compute) time unit in after grades" $ do
-      case runParser pEffect "test" "after 1u {comp<suc>}" of
+      case runAnnotatedParser False pEffect "test" "after 1u {comp<suc>}" of
         Left err -> expectationFailure $ "Parse failed: " <> show err
         Right eff ->
           eff `shouldBe`
@@ -351,7 +351,7 @@ spec = do
       -- comp[err], and "comp" is the component keyword; pEventLabelName
       -- deliberately skips the reserved-keyword check (a label name is
       -- always immediately followed by '<').
-      case runParser pEffect "test" "comp<suc> + comp<err>" of
+      case runAnnotatedParser False pEffect "test" "comp<suc> + comp<err>" of
         Left err -> expectationFailure $ "Parse failed: " <> show err
         Right eff ->
           eff `shouldBe`
@@ -368,7 +368,7 @@ spec = do
       -- full application — EX-ASYNCCOMPUTE in PaperExamplesSpec pins the
       -- instantiated effect. Here we pin the parse tree itself.
       let schemaCode = "forall e1, e2. (int -> unit | e1) -> (int -> unit | e2) -> unit | after 1u {comp<suc> + comp<err>} * eventually comp<suc> {e1 * remove comp<err>} * eventually comp<err> {e2 * remove comp<suc>}"
-      case runParser pType "test" schemaCode of
+      case runAnnotatedParser False pType "test" schemaCode of
         Left err -> expectationFailure $ "Parse failed: " <> show err
         Right (TArrow binders _ (TArrow [] _ _ latent) EffNone) -> do
           binders `shouldBe` [EffVarName "e1", EffVarName "e2"]
@@ -389,7 +389,7 @@ spec = do
     -- `if c then e1 else e2` is the paper's syntax for a conditional (Fig. 5);
     -- it builds the same EIfF node as the `c ? e1 : e2` ternary.
     let lets body = Text.unlines $ ["comp C(b: bool, c: bool, x: int) : int {"] <> map ("  " <>) body <> ["  return 0;", "}"]
-        rhsOf name code = case runParser pComponent "test" code of
+        rhsOf name code = case runAnnotatedParser False pComponent "test" code of
           Left err -> Left (show err)
           Right (_ :< ComponentF _ _ _ decls _ _) ->
             maybe (Left ("no let " <> Text.unpack name)) Right
@@ -451,6 +451,6 @@ spec = do
             , "  return clk;"
             , "}"
             ]
-      case runParser pComponent "test" code of
+      case runAnnotatedParser False pComponent "test" code of
         Left _ -> pure ()
         Right c -> expectationFailure $ "expected a parse failure, got: " <> show (pretty c)

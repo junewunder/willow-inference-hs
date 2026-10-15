@@ -98,6 +98,7 @@ test-suite willow-hs-test
   type: exitcode-stdio-1.0
   main-is: Spec.hs
   other-modules:
+      AllowAnySpec
       EffectPolymorphismSpec
       EffectPrettySpec
       EffectVariableLawsSpec

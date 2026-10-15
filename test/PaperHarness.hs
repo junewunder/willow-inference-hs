@@ -20,8 +20,11 @@
 module PaperHarness
   ( -- * Running inference
     runInferenceTest
+  , runInferenceTestWith
   , inferSource
+  , inferSourceWith
   , inferSourceEither
+  , inferSourceEitherWith
   , emptySigma
   , expectJust
     -- * Inspecting results
@@ -42,9 +45,8 @@ module PaperHarness
 import Import
 import InferenceMonad
 import InferTyEffect (inferTyEffProgramWithEventsTEST, buildSigmaE)
-import Parse (pProgram)
+import Parse (pProgram, runAnnotatedParser)
 import Test.Hspec (Expectation, expectationFailure)
-import Text.Megaparsec (runParser)
 import qualified RIO.Map as Map
 import qualified RIO.Text as Text
 import RIO.Process (mkDefaultProcessContext)
@@ -52,19 +54,27 @@ import Control.Comonad.Cofree (Cofree(..))
 
 -- | Run an 'InferenceM' action in a fresh test context.
 runInferenceTest :: InferenceM a -> IO (Either InferenceError a)
-runInferenceTest inferenceAction = do
+runInferenceTest = runInferenceTestWith testOptions
+
+-- | 'runInferenceTest' under the given CLI options.
+runInferenceTestWith :: Options -> InferenceM a -> IO (Either InferenceError a)
+runInferenceTestWith options inferenceAction = do
   logOptions <- logOptionsHandle stderr False
   withLogFunc logOptions $ \logFunc -> do
     processContext <- mkDefaultProcessContext
     varCounter <- newIORef 0
-    let app = RIOApp logFunc processContext testOptions varCounter
+    let app = RIOApp logFunc processContext options varCounter
     runRIO app $ runInferenceWithContext Nothing "test" inferenceAction
 
 -- | Parse and type/effect-check a whole program source, failing the test on
 -- either a parse error or an inference error.
 inferSource :: Text -> IO (Sigma, [([AnnotatedDeclaration], AnnotatedNode)])
-inferSource progCode = do
-  result <- inferSourceEither progCode
+inferSource = inferSourceWith testOptions
+
+-- | 'inferSource' under the given CLI options.
+inferSourceWith :: Options -> Text -> IO (Sigma, [([AnnotatedDeclaration], AnnotatedNode)])
+inferSourceWith options progCode = do
+  result <- inferSourceEitherWith options progCode
   case result of
     Left inferErr -> expectationFailure ("Type inference failed: " <> show inferErr) >> error "unreachable"
     Right r -> pure r
@@ -72,10 +82,14 @@ inferSource progCode = do
 -- | Like 'inferSource', but returns the inference result so negative tests
 -- can assert that a program is rejected.
 inferSourceEither :: Text -> IO (Either InferenceError (Sigma, [([AnnotatedDeclaration], AnnotatedNode)]))
-inferSourceEither progCode =
-  case runParser pProgram "test" progCode of
+inferSourceEither = inferSourceEitherWith testOptions
+
+-- | 'inferSourceEither' under the given CLI options; the parse sees them too.
+inferSourceEitherWith :: Options -> Text -> IO (Either InferenceError (Sigma, [([AnnotatedDeclaration], AnnotatedNode)]))
+inferSourceEitherWith options progCode =
+  case runAnnotatedParser (optionsAllowAny options) pProgram "test" progCode of
     Left err -> expectationFailure ("Parse failed: " <> show err) >> error "unreachable"
-    Right (_ann :< ProgramF eventDecls comps) -> runInferenceTest $ do
+    Right (_ann :< ProgramF eventDecls comps) -> runInferenceTestWith options $ do
       sigmaE <- buildSigmaE eventDecls
       inferTyEffProgramWithEventsTEST emptySigma sigmaE comps
 

@@ -156,10 +156,12 @@ data Options = Options
   { optionsVerbose :: !Bool
   , optionsInitialRenderAnalysis :: !Bool
   , optionsHandlerCleanupAnalysis :: !Bool
+  , optionsAllowAny :: !Bool
+    -- ^ accept the unsound type @any@ (see 'TAny')
   , optionsInputFile :: !(Maybe FilePath)
   }
 testOptions :: Options
-testOptions = Options False False False Nothing
+testOptions = Options False False False False Nothing
 
 data RIOApp = RIOApp
   { appLogFunc :: !LogFunc
@@ -294,6 +296,11 @@ data Type
   | TDelay Delay Type
   | TComponent [Type] Type
   | TPair Type Type
+  -- | The unsound catch-all type: it unifies with every type and binds
+  -- nothing. It exists only under @--allow-any@ ('optionsAllowAny'), for
+  -- programs written against versions that had it; without the flag no
+  -- source, built-in or rule produces it.
+  | TAny
   deriving (Eq, Show, Ord)
 
 newtype EffVarName = EffVarName Text
@@ -474,6 +481,7 @@ prettyType TInt = "int"
 prettyType TBool = "bool"
 prettyType TUnit = "unit"
 prettyType THtml = "html"
+prettyType TAny = "any"
 prettyType (TArrow (ev:effVars) arg ret eff) =
   "∀" <+> commaSep (map pretty (ev:effVars)) <>
   parens (prettyType arg) <+> "->" <+> prettyType ret <+> "|" <+> pretty eff

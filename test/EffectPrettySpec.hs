@@ -12,9 +12,9 @@
 module EffectPrettySpec (spec) where
 
 import Import
-import Parse (pEffect)
+import Parse (pEffect, runAnnotatedParser)
 import Test.Hspec
-import Text.Megaparsec (runParser, eof)
+import Text.Megaparsec (eof)
 import Prettyprinter (LayoutOptions (..), PageWidth (..), layoutPretty)
 import Prettyprinter.Render.Text (renderStrict)
 import qualified RIO.Text as Text
@@ -25,7 +25,7 @@ canonical :: Effect -> Text
 canonical = renderStrict . layoutPretty (LayoutOptions Unbounded) . prettyEffect
 
 reparse :: Text -> Either String Effect
-reparse src = case runParser (pEffect <* eof) "effect" (Text.strip src) of
+reparse src = case runAnnotatedParser False (pEffect <* eof) "effect" (Text.strip src) of
   Left err -> Left (show err)
   Right eff -> Right eff
 

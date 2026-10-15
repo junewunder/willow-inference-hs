@@ -25,6 +25,9 @@ main = do
        <*> switch ( long "cleanup"
                  <> help "Show event-handler cleanup analysis (stale listeners)"
                   )
+       <*> switch ( long "allow-any"
+                 <> help "Accept the unsound type any, the built-in null, and unannotated λ parameters anywhere (for programs written against older versions)"
+                  )
        <*> optional (argument str (metavar "FILE" <> help "Willow program to analyze"))
     )
     empty

@@ -114,8 +114,9 @@ inferTyEffComponentM :: Sigma -> SigmaE -> Component -> InferenceM (([AnnotatedD
 inferTyEffComponentM sigma sigmaE compNode@(_ :< ComponentF name effParams args decls ret retSchema) = do
   let span = getComponentSpan compNode
       componentText = Text.pack $ "Component " <> Text.unpack name
+  allowAny <- asksRIO (optionsAllowAny . appOptions)
   withSourceContext (Just span) componentText $ do
-    let env0 = Map.union (Map.fromList args) tyLibraryFunctions
+    let env0 = Map.union (Map.fromList args) (tyLibraryFunctions allowAny)
         effEnv0 = Delta (Map.fromList (List.map (\(x, _) -> (x, DeltaEntry [] EffNone)) args))
         -- The component's declared effect parameters are bound by @comp C<F>@,
         -- so they belong to the context even where no argument type mentions
@@ -425,26 +426,36 @@ inferTyEffExprTypedM sigmaE env effEnv inputNode@(_ :< langF) = do
         return (s, mkTypedExpr span THtml (getEffect tnode) (EJSXNodeF tnode))
       -- An unannotated λ is only typed when it is checked against an
       -- expected arrow ('inferTyEffExprTypedWithExpectedM'); anywhere else
-      -- nothing determines its parameter's type.
-      EArrowF _ param Nothing _ ->
-        fail $ "Cannot infer the type of the parameter " <> Text.unpack param
-          <> " of " <> show (pretty inputNode)
-          <> ": a λ's parameter needs a type annotation, as in (" <> Text.unpack param <> ": int) => …,"
-          <> " unless the λ is passed directly where a function type is expected."
-      EArrowF vs param (Just annTy) body -> do
-        let paramTy = flexibleParamAnnotation env annTy
-            env' = bindVar param paramTy env
+      -- nothing determines its parameter's type. Under @--allow-any@ the
+      -- parameter gets the unsound type any instead.
+      EArrowF vs param mTy body -> do
+        allowAny <- asksRIO (optionsAllowAny . appOptions)
+        paramTy <- case mTy of
+          Just annTy -> pure (flexibleParamAnnotation env annTy)
+          Nothing
+            | allowAny -> pure TAny
+            | otherwise ->
+                fail $ "Cannot infer the type of the parameter " <> Text.unpack param
+                  <> " of " <> show (pretty inputNode)
+                  <> ": a λ's parameter needs a type annotation, as in (" <> Text.unpack param <> ": int) => …,"
+                  <> " unless the λ is passed directly where a function type is expected."
+        let env' = bindVar param paramTy env
         (s, tbody) <- inferTyEffExprTypedM sigmaE env' effEnv body
         let bodyTy = getType tbody
             bodyEff = getEffect tbody
         return (s, mkSimpleTypedExpr span
           (TArrow vs (substType s paramTy) (ensureMono bodyTy) bodyEff)
-          (EArrowF vs param (Just annTy) tbody))
+          (EArrowF vs param mTy tbody))
 
       EAppF f x -> do
         (s1, tf) <- inferTyEffExprTypedM sigmaE env effEnv f
         tfTy <- case getType tf of
           tfSch@(TArrow {}) -> instantiateSchema tfSch
+          -- Only under @--allow-any@.
+          TAny ->
+            fail $ "Cannot apply " <> show (pretty f) <> ": its type is any"
+              <> " (an unannotated λ parameter, or null), which is not known to be a function."
+              <> " Annotate it with a function type."
           other ->
             fail $ "Type error: applying " <> show (pretty f) <> ", which is not a function: it has type "
               <> show (pretty other)
@@ -940,6 +951,9 @@ unifyEffectPairs = foldM step Map.empty
 -- binding that would let one escape its schema is rejected.
 unifyType :: Type -> Type -> InferenceM EffSubst
 unifyType t1 t2 = case (t1, t2) of
+  -- any (only under @--allow-any@) unifies with everything and binds nothing.
+  (TAny, _) -> return Map.empty
+  (_, TAny) -> return Map.empty
   (TInt, TInt) -> return Map.empty
   (TBool, TBool) -> return Map.empty
   (TString, TString) -> return Map.empty
