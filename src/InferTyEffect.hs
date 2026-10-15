@@ -873,8 +873,12 @@ writtenNamesType ty = case ty of
 --
 -- A rule with several premises solves them left to right, each under the
 -- substitution so far, and composes the results (see 'unifyEffectPairs').
+--
+-- A sequence unifies only with a sequence of the same length, element by
+-- element; against anything else it fails. Both sides are first normalised
+-- by 'normSeq', so that an unflattened @[F]@ still unifies with @F@.
 unifyEffect :: Effect -> Effect -> InferenceM EffSubst
-unifyEffect e1 e2 = case (e1, e2) of
+unifyEffect e1 e2 = case (normSeq e1, normSeq e2) of
   (EffUnif u1, EffUnif u2) | u1 == u2 -> return Map.empty
   (EffUnif u, eff) -> bindUnif u eff
   (eff, EffUnif u) -> bindUnif u eff
@@ -882,14 +886,6 @@ unifyEffect e1 e2 = case (e1, e2) of
   (EffNone, EffNone) -> return Map.empty
   (EffSeq s1, EffSeq s2) | length s1 == length s2 ->
     unifyEffectPairs (zip s1 s2)
-  (eff, EffSeq s2) -> do
-    case s2 of
-      [] -> unifyEffect eff EffNone
-      eff1 : rest -> unifyEffectPairs ((eff, eff1) : map (\r -> (EffNone, r)) rest)
-  (EffSeq s2, eff) -> do
-    case s2 of
-      [] -> unifyEffect eff EffNone
-      eff1 : rest -> unifyEffectPairs ((eff, eff1) : map (\r -> (EffNone, r)) rest)
   (EffBranch a1 b1, EffBranch a2 b2) -> unifyEffectPairs [(a1, a2), (b1, b2)]
   (EffBranch a1 b1, eff) -> unifyEffectPairs [(a1, eff), (b1, eff)]
   (eff, EffBranch a1 b1) -> unifyEffectPairs [(a1, eff), (b1, eff)]
@@ -910,6 +906,13 @@ unifyEffect e1 e2 = case (e1, e2) of
       | otherwise = ""
     isWritten (EffVar _) = True
     isWritten _ = False
+
+-- | Collapse a degenerate sequence at the root: @[]@ is @·@ and @[F]@ is
+-- @F@, as 'mkEffSeq' would build them.
+normSeq :: Effect -> Effect
+normSeq (EffSeq []) = EffNone
+normSeq (EffSeq [e]) = normSeq e
+normSeq e = e
 
 -- | Bind a unification variable, after the occurs check: @?e ≐ F@ with @?e@
 -- free in @F@ (and @F ≠ ?e@) has no solution, since the binding would be

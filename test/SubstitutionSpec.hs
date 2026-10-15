@@ -19,6 +19,7 @@ import InferenceMonad (InferenceError (..))
 import InferTyEffect (unifyEffect)
 import Test.Hspec
 import Text.Megaparsec.Pos (sourceColumn, sourceLine, unPos)
+import qualified RIO.Map as Map
 import qualified RIO.Text as Text
 
 spec :: Spec
@@ -141,11 +142,41 @@ spec = describe "Substitutions (Algorithm W)" $ do
       result <- runInferenceTest $ unifyEffect (EffUnif 1) (seqE [EffUnif 1, at "x"])
       isLeft result `shouldBe` True
 
-    it "a sequence's premises are solved in turn: ○¹ʳ ?e ≐ ○¹ʳ @x * ?e does not bind ?e to both @x and ·" $ do
-      -- The first premise binds ?e to @x; the second, · ≐ ?e, is then
-      -- · ≐ @x, which fails. A union of the two unifiers kept ?e ↦ @x.
-      result <- runInferenceTest $ unifyEffect (after1r (EffUnif 1)) (seqE [after1r (at "x"), EffUnif 1])
+    it "a sequence's premises are solved in turn: ○¹ʳ ?e * ?e ≐ ○¹ʳ @x * · does not bind ?e to both @x and ·" $ do
+      -- The first premise binds ?e to @x; the second, ?e ≐ ·, is then
+      -- @x ≐ ·, which fails. A union of the two unifiers kept ?e ↦ @x.
+      result <- runInferenceTest $
+        unifyEffect (seqE [after1r (EffUnif 1), EffUnif 1]) (seqE [after1r (at "x"), EffNone])
       isLeft result `shouldBe` True
+
+  -- -----------------------------------------------------------------------
+  describe "sequences unify only with sequences of the same length" $ do
+
+    it "unifies element by element" $ do
+      result <- runInferenceTest $
+        unifyEffect (seqE [EffUnif 1, at "y"]) (seqE [at "x", EffUnif 2])
+      result `shouldBe` Right (Map.fromList [(Unif 1, at "x"), (Unif 2, at "y")])
+
+    it "rejects a sequence against a non-sequence: @x * ?e ≐ @x" $ do
+      -- Matching @x against the first element and every other element
+      -- against · would accept this, binding ?e to ·.
+      r1 <- runInferenceTest $ unifyEffect (seqE [at "x", EffUnif 1]) (at "x")
+      isLeft r1 `shouldBe` True
+      r2 <- runInferenceTest $ unifyEffect (at "x") (seqE [at "x", EffUnif 1])
+      isLeft r2 `shouldBe` True
+
+    it "rejects sequences of different lengths: ?e1 * ?e2 ≐ @x * · * ?e3" $ do
+      -- Matching the whole shorter sequence against the first element of the
+      -- longer, and · against the rest, would accept this with ?e2, ?e3 ↦ ·.
+      result <- runInferenceTest $
+        unifyEffect (seqE [EffUnif 1, EffUnif 2]) (seqE [at "x", EffNone, EffUnif 3])
+      isLeft result `shouldBe` True
+
+    it "an unflattened one-element sequence [F] still unifies with F" $ do
+      r1 <- runInferenceTest $ unifyEffect (EffSeq [after1r (EffUnif 1)]) (after1r (at "x"))
+      r1 `shouldBe` Right (Map.fromList [(Unif 1, at "x")])
+      r2 <- runInferenceTest $ unifyEffect (after1r (at "x")) (EffSeq [after1r (EffUnif 1)])
+      r2 `shouldBe` Right (Map.fromList [(Unif 1, at "x")])
 
   -- -----------------------------------------------------------------------
   describe "applying a value that is not a function" $ do
