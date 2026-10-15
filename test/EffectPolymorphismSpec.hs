@@ -330,6 +330,42 @@ spec = describe "Effect polymorphism (Hindley–Milner)" $ do
       pure ()
 
   -- -----------------------------------------------------------------------
+  describe "an instance prefixes only the child's own state" $ do
+
+    -- Child's own @s is renamed @y.s in the parent. Its F is filled in with
+    -- the parent's effect, @x, which belongs to the parent and must keep its
+    -- name.
+    let child =
+          [ "comp Child<F>(cb: (int -> int) -> unit | F, clk: int) : unit {"
+          , "  state s, setS default 0;"
+          , "  on clk do { setS(addOne) ;; cb(addOne) };"
+          , "  return ();"
+          , "}"
+          ]
+        parent decls = Text.unlines $ child <>
+          [ "comp P(clk: int) : unit {"
+          , "  state x, setX default 0;"
+          ] <> map ("  " <>) decls <>
+          [ "  return ();"
+          , "}"
+          ]
+        cases =
+          [ ("the setter itself", ["comp y = Child(setX, clk);"])
+          , ("a λ that calls the setter", ["comp y = Child((g: int -> int) => { setX(g) }, clk);"])
+          , ("a let-bound setter", ["let k = setX;", "comp y = Child(k, clk);"])
+          , ("a let-bound λ that calls the setter", ["let k = (g: int -> int) => { setX(g) };", "comp y = Child(k, clk);"])
+          , ("an explicit effect argument", ["comp y = Child<after 1r {@x}>(setX, clk);"])
+          ]
+
+    forM_ cases $ \(what, decls) ->
+      it ("passing " <> what <> " keeps the parent's @x unprefixed") $ do
+        (sigma, _) <- inferSource (parent decls)
+        cascadeOf sigma "P" "y.clk" `shouldBe` seqE [after1r (at "y.s"), after1r (at "x")]
+        let full = fullEffectVar (deltaOf sigma "P") "clk"
+        stateChanges full `shouldContain` ["x"]
+        stateChanges full `shouldNotContain` ["y.x"]
+
+  -- -----------------------------------------------------------------------
   describe "an application checks an argument against a schema parameter" $ do
 
     -- r2 uses its parameter at the effect of whichever function it is given.
@@ -414,3 +450,14 @@ rejected :: String -> Either InferenceError a -> Expectation
 rejected what result = case result of
   Left _ -> pure ()
   Right _ -> expectationFailure (what <> " was accepted")
+
+-- | Every state-change name in an effect, in order.
+stateChanges :: Effect -> [Text]
+stateChanges eff = case eff of
+  EffStateChange v -> [v]
+  EffSeq es -> concatMap stateChanges es
+  EffBranch a b -> stateChanges a <> stateChanges b
+  EffAfter _ e -> stateChanges e
+  EffAlways _ e -> stateChanges e
+  EffEventually _ e -> stateChanges e
+  _ -> []

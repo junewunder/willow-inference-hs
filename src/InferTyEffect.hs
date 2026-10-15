@@ -319,7 +319,10 @@ inferTyEffDeclM (Sigma sigma) sigmaE scope tyEnv effEnv declNode@(_ :< declF) = 
           effSubst <- buildEffectSubstitution compName effParams'
           finalSubst <- validateArgumentTypes args tyEnv effSubst
 
-          -- Apply substitutions and build environment
+          -- Apply substitutions and build environment. The instance prefix
+          -- goes on before the substitution, so it renames only the child's
+          -- own state: what the substitution fills in for the child's effect
+          -- parameters is the parent's, and keeps its name.
           let env' = buildTypeEnvironment retTy args tyEnv
               effEnv' = buildEffectEnvironment retName args subCompDelta effEnv
               env'' = substEnv finalSubst env'
