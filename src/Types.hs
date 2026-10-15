@@ -294,7 +294,6 @@ data Type
   | TDelay Delay Type
   | TComponent [Type] Type
   | TPair Type Type
-  | TAny
   deriving (Eq, Show, Ord)
 
 newtype EffVarName = EffVarName Text
@@ -475,7 +474,6 @@ prettyType TInt = "int"
 prettyType TBool = "bool"
 prettyType TUnit = "unit"
 prettyType THtml = "html"
-prettyType TAny = "any"
 prettyType (TArrow (ev:effVars) arg ret eff) =
   "∀" <+> commaSep (map pretty (ev:effVars)) <>
   parens (prettyType arg) <+> "->" <+> prettyType ret <+> "|" <+> pretty eff

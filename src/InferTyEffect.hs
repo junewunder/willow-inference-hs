@@ -423,24 +423,28 @@ inferTyEffExprTypedM sigmaE env effEnv inputNode@(_ :< langF) = do
       EJSXNodeF node -> do
         (s, tnode) <- inferTyEffJSXNodeTypedM sigmaE env effEnv node
         return (s, mkTypedExpr span THtml (getEffect tnode) (EJSXNodeF tnode))
-      EArrowF vs param mTy body -> do
-        let paramTy = maybe TAny (flexibleParamAnnotation env) mTy
+      -- An unannotated λ is only typed when it is checked against an
+      -- expected arrow ('inferTyEffExprTypedWithExpectedM'); anywhere else
+      -- nothing determines its parameter's type.
+      EArrowF _ param Nothing _ ->
+        fail $ "Cannot infer the type of the parameter " <> Text.unpack param
+          <> " of " <> show (pretty inputNode)
+          <> ": a λ's parameter needs a type annotation, as in (" <> Text.unpack param <> ": int) => …,"
+          <> " unless the λ is passed directly where a function type is expected."
+      EArrowF vs param (Just annTy) body -> do
+        let paramTy = flexibleParamAnnotation env annTy
             env' = bindVar param paramTy env
         (s, tbody) <- inferTyEffExprTypedM sigmaE env' effEnv body
         let bodyTy = getType tbody
             bodyEff = getEffect tbody
         return (s, mkSimpleTypedExpr span
           (TArrow vs (substType s paramTy) (ensureMono bodyTy) bodyEff)
-          (EArrowF vs param mTy tbody))
+          (EArrowF vs param (Just annTy) tbody))
 
       EAppF f x -> do
         (s1, tf) <- inferTyEffExprTypedM sigmaE env effEnv f
         tfTy <- case getType tf of
           tfSch@(TArrow {}) -> instantiateSchema tfSch
-          TAny ->
-            fail $ "Cannot apply " <> show (pretty f) <> ": its type is any"
-              <> " (an unannotated λ parameter, or null), which is not known to be a function."
-              <> " Annotate it with a function type."
           other ->
             fail $ "Type error: applying " <> show (pretty f) <> ", which is not a function: it has type "
               <> show (pretty other)
@@ -547,9 +551,9 @@ inferTyEffExprTypedM sigmaE env effEnv inputNode@(_ :< langF) = do
     inferListener kw lbl e = do
       payload <- lookupEventPayload sigmaE lbl
       -- WithExpected pushes the payload type into UNANNOTATED inline lambdas
-      -- (EArrowF defaults param to TAny otherwise, which would satisfy the
-      -- paper's τ = Σ_E(ℓ⟨v⟩) premise vacuously); annotated handlers fall
-      -- through to plain inference. Mirrors EAppF's argument discipline.
+      -- (which plain inference rejects, having nothing to give their
+      -- parameter); annotated handlers fall through to plain inference.
+      -- Mirrors EAppF's argument discipline.
       (s1, te) <- inferTyEffExprTypedWithExpectedM sigmaE env effEnv (Just (TArrow [] payload TUnit EffNone)) e
       -- Mirror EAppF's instantiation discipline: instantiate schemas.
       teFnTy <- case getType te of
@@ -610,7 +614,8 @@ inferTyEffExprTypedWithExpectedM sigmaE env effEnv mExpected inputNode@(_ :< lan
         let bodyEff = getEffect tbody
         return (s, mkSimpleTypedExpr span (TArrow vs (substType s argTy) (ensureMono bodyTy) bodyEff) (EArrowF vs param Nothing tbody))
       _ ->
-        -- Fallback to regular inference if no expected type or wrong expected type
+        -- No expected arrow to take the parameter's type from: regular
+        -- inference reports the missing annotation.
         inferTyEffExprTypedM sigmaE env effEnv inputNode
     _ ->
       -- For all other expressions, use regular inference
@@ -935,8 +940,6 @@ unifyEffectPairs = foldM step Map.empty
 -- binding that would let one escape its schema is rejected.
 unifyType :: Type -> Type -> InferenceM EffSubst
 unifyType t1 t2 = case (t1, t2) of
-  (TAny, _) -> return Map.empty
-  (_, TAny) -> return Map.empty
   (TInt, TInt) -> return Map.empty
   (TBool, TBool) -> return Map.empty
   (TString, TString) -> return Map.empty

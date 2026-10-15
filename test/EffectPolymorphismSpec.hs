@@ -28,17 +28,18 @@ spec = describe "Effect polymorphism (Hindley–Milner)" $ do
   describe "written and unification variables are distinct" $ do
 
     it "a fresh variable never takes the name of a written one" $ do
-      -- fetch : ∀e. (string × (any → unit | e)) → unit | ○¹ⁿ e. Passing
-      -- null leaves its e unconstrained, so the call's effect keeps the
-      -- fresh variable. The component's own parameter is spelled e0, the
-      -- name the first fresh variable used to get: the two must stay apart.
+      -- fetch : ∀e. (string × (string → unit | e)) → unit | ○¹ⁿ e. Passing
+      -- the polymorphic k leaves its e unconstrained, so the call's effect
+      -- keeps a fresh variable: k's instance, the second one made. The
+      -- component's own parameter is spelled e1, the name that variable used
+      -- to get: the two must stay apart.
       (sigma, _) <- inferSource $ Text.unlines
-        [ "comp Fresh<e0>(g: int -> unit | e0, clk: int) : unit {"
-        , "  on clk do { fetch(\"/u\", null) ;; g(1) };"
+        [ "comp Fresh<e1>(g: int -> unit | e1, k: forall F. string -> unit | F, clk: int) : unit {"
+        , "  on clk do { fetch(\"/u\", k) ;; g(1) };"
         , "  return ();"
         , "}"
         ]
-      printed (cascadeOf sigma "Fresh" "clk") `shouldBe` "after 1n {?_e0} * ?e0"
+      printed (cascadeOf sigma "Fresh" "clk") `shouldBe` "after 1n {?_e1} * ?e1"
 
     it "a written variable unifies with itself" $ do
       _ <- inferSource $ Text.unlines
@@ -250,15 +251,15 @@ spec = describe "Effect polymorphism (Hindley–Milner)" $ do
 
     it "an annotation may not quantify a variable the context fixes" $ do
       -- a.g has effect ?_e: A's parameter, left open because its argument
-      -- has type any. That variable is in the context, so it cannot be
-      -- generalised, and binding it to the annotation's F would let F escape.
+      -- is polymorphic and binds nothing. That variable is in the context, so
+      -- it cannot be generalised, and binding it to the annotation's F would
+      -- let F escape.
       result <- inferSourceEither $ Text.unlines
         [ "comp A<f>(g: int -> unit | f, clk: int) : unit {"
         , "  on clk do { g(1) };"
         , "  return ();"
         , "}"
-        , "comp P(clk: int) : unit {"
-        , "  let nn = null;"
+        , "comp P(nn: forall G. int -> unit | G, clk: int) : unit {"
         , "  comp a = A(nn, clk);"
         , "  let h : forall F. int -> unit | F = a.g;"
         , "  return ();"
@@ -295,15 +296,14 @@ spec = describe "Effect polymorphism (Hindley–Milner)" $ do
             ]
 
     it "a parameter left unbound does not leak into the parent under its own name" $ do
-      -- nn : any binds nothing, so A's f stays open. It must not become the
-      -- parent's own parameter f.
+      -- nn is polymorphic and binds nothing, so A's f stays open. It must
+      -- not become the parent's own parameter f.
       (sigma, _) <- inferSource $ Text.unlines
         [ "comp A<f>(g: int -> unit | f, clk: int) : unit {"
         , "  on clk do { g(1) };"
         , "  return ();"
         , "}"
-        , "comp P<f>(k: int -> unit | f, clk: int) : unit {"
-        , "  let nn = null;"
+        , "comp P<f>(k: int -> unit | f, nn: forall G. int -> unit | G, clk: int) : unit {"
         , "  comp a = A(nn, clk);"
         , "  on clk do { k(1) };"
         , "  return ();"

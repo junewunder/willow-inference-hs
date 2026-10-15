@@ -46,8 +46,8 @@ builtinFunctionTypes = Map.fromList
   , ("not", "bool -> bool")
   , ("()", "unit")
   , ("expensive", "int -> int")
-  , ("fetch", "forall e. (string * (any -> unit | e)) -> unit | after 1n {e}")
-  , ("fetchData", "forall eSuc, eErr. (string * (any -> unit | eSuc) * (any -> unit | eErr)) -> unit | after 1n {eSuc + eErr}")
+  , ("fetch", "forall e. (string * (string -> unit | e)) -> unit | after 1n {e}")
+  , ("fetchData", "forall eSuc, eErr. (string * (string -> unit | eSuc) * (string -> unit | eErr)) -> unit | after 1n {eSuc + eErr}")
   , ("asyncCompute", "forall e1, e2. (int -> unit | e1) -> (int -> unit | e2) -> unit | after 1u {comp<suc> + comp<err>} * eventually comp<suc> {e1 * remove comp<err>} * eventually comp<err> {e2 * remove comp<suc>}")
   , ("fetchUsernameCheck", "forall e1, e2. (string * ((string * bool) -> unit | e1) * (string -> unit | e2)) -> unit | after 1n {req<check,suc> + req<check,err>} * eventually req<check,suc> {e1 * remove req<check,err>} * eventually req<check,err> {e2 * remove req<check,suc>}")
   , ("has", "(string * string) -> bool")
@@ -56,7 +56,6 @@ builtinFunctionTypes = Map.fromList
   , ("clearInterval", "unit -> unit")
   , ("const", "int -> int -> int")
   , (";;", "unit -> unit -> unit")
-  , ("null", "any")
   , ("Date.now", "unit -> int")
   , ("random", "unit -> int")
   ]

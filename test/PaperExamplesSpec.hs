@@ -205,13 +205,13 @@ spec = describe "Paper worked examples" $ do
     -- the network call is visibly behind the debounce timer. (Parens around
     -- (toString slowInput): application binds LOOSER than ++ in the impl's
     -- grammar.) fetch's existing schema
-    --   forall e. (string * (any -> unit | e)) -> unit | after 1n {e}
+    --   forall e. (string * (string -> unit | e)) -> unit | after 1n {e}
     -- already has the shape this example needs; F = · (the pure callback).
     content <- readFileUtf8 "examples/paper/Debounce.txt"
     let search = Text.unlines
           [ "comp Search(input: int) : unit {"
           , "  comp slowInput = Debounce(input);"
-          , "  on slowInput do { fetch(\"/api/search?q=\" ++ (toString slowInput), (res: any) => { () }) };"
+          , "  on slowInput do { fetch(\"/api/search?q=\" ++ (toString slowInput), (res: string) => { () }) };"
           , "  return ();"
           , "}"
           ]

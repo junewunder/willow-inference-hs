@@ -368,20 +368,21 @@ pExprAtom = do
     -- Smart arrow function parser
     pArrowFunction :: AnnotatedParser AnnotatedNode
     pArrowFunction = do
+      startPos <- getSourcePos
       params <- try (parens (pArrowParam `sepBy` symbol ",") <* lookAhead (symbol "=>"))
                 <|> try (do
                       x <- pIdentifier <* lookAhead (symbol "=>")
                       return [(x, Nothing)])
       _ <- symbol "=>"
       body <- braces pExpr <|> pExpr
-      case params of
-        [] -> withSourceInfo $ return $ EArrowF [] "_" (Just TAny) body
-        _ -> do
-          let curryArrow [] b = b
-              curryArrow ((param, mSch):ps) b = do
-                rest <- curryArrow ps b
-                withSourceInfo $ return $ EArrowF [] param mSch rest
-          curryArrow params (pure body)
+      endPos <- getSourcePos
+      -- Every curried λ spans the whole source λ, so an error about one
+      -- (a missing parameter annotation, say) points at it.
+      let arrow param mTy b =
+            NodeAnnotation (Span startPos endPos) TUnit EffNone :< LangFExpr (EArrowF [] param mTy b)
+      pure $ case params of
+        [] -> arrow "_" (Just TUnit) body
+        _ -> foldr (\(param, mTy) b -> arrow param mTy b) body params
 
     -- Parse access chain (.0, .1)
     pAccessChain e = do
@@ -539,7 +540,6 @@ pBaseType = choice
   , TBool <$ symbol "bool"
   , TUnit <$ symbol "unit"
   , THtml <$ symbol "html"
-  , TAny <$ symbol "any"
   , pSchema
   , parens pType
   ]

@@ -565,7 +565,10 @@ where one the component does not bind stands for whatever effect it meets, as in
 across all the annotations of its declaration), every `let` is generalised over the
 variables its context does not own, an annotated `let` must be an instance of what its
 definition infers, and each component instance gets fresh variables for its effect
-parameters. Unification is Algorithm W's: one substitution is threaded through a whole
+parameters. A λ's parameter needs a type annotation unless the λ is passed directly
+where a function type is expected (as the argument of a function, or as a `bind` or
+`once` handler), in which case it takes that type; `() => e` takes `unit`. Anywhere
+else an unannotated parameter is an error asking for the annotation. Unification is Algorithm W's: one substitution is threaded through a whole
 component, composed at each step and applied to the context, and a variable is never
 bound to an effect it occurs in. The paper gives the
 grammar (Fig. 5) and the full set of typing rules (Figs. 6–7, and Figs. 10–15 in the
