@@ -8,7 +8,7 @@
 module Run (run) where
 
 import Import
-import Parse (pProgram)
+import Parse (pProgram, runAnnotatedParser)
 import InferTyEffect (inferTyEffProgram)
 import InferenceMonad (InferenceError(..))
 import Control.Comonad.Cofree (Cofree(..))
@@ -17,7 +17,7 @@ import qualified RIO.Map as Map
 import qualified RIO.Text as Text
 import RIO.List (sort)
 import qualified RIO.List as List
-import Text.Megaparsec (runParser, errorBundlePretty, ParseErrorBundle)
+import Text.Megaparsec (errorBundlePretty, ParseErrorBundle)
 import Text.Megaparsec.Pos (unPos, sourceLine, sourceColumn)
 import Prettyprinter
 import Prettyprinter.Render.Text (renderStrict)
@@ -85,14 +85,15 @@ printUsage :: RIO RIOApp ()
 printUsage = do
   out "Willow — a type-and-effect checker for React timing"
   out ""
-  out "Usage: willow-hs-exe [-v|--verbose] [--first] [--cleanup] FILE"
+  out "Usage: willow-hs-exe [-v|--verbose] [--first] [--cleanup] [--allow-any] FILE"
   out ""
   out "  Analyze a Willow program and report the inferred type-and-effect of"
   out "  each component (state changes, render/network delays, cascades, loops)."
   out ""
-  out "  --first    also show the initial-render analysis"
-  out "  --cleanup  also check that every event handler is removed again"
-  out "  -v         verbose (dumps the parsed AST)"
+  out "  --first      also show the initial-render analysis"
+  out "  --cleanup    also check that every event handler is removed again"
+  out "  --allow-any  accept the unsound type any (for programs from older versions)"
+  out "  -v           verbose (dumps the parsed AST)"
   out ""
   let paperDir = "examples" FP.</> "paper"
   exists <- liftIO $ Dir.doesDirectoryExist paperDir
@@ -107,7 +108,8 @@ printUsage = do
 analyzeProgram :: FilePath -> Text -> RIO RIOApp ()
 analyzeProgram filename progStr = do
   logInfo "Parsing program with annotated AST..."
-  case runParser pProgram filename progStr of
+  Options{optionsAllowAny} <- appOptions <$> ask
+  case runAnnotatedParser optionsAllowAny pProgram filename progStr of
     Left err -> handleParseError err >> exitFailure
     Right prog -> handleSuccessfulParse progStr prog
 

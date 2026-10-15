@@ -6,7 +6,7 @@ import Import
 import Parse
 import InferTyEffect
 import Test.Hspec
-import Text.Megaparsec (runParser, initialPos)
+import Text.Megaparsec (initialPos)
 import qualified RIO.Text as Text
 import qualified RIO.Map as Map
 import qualified RIO.Set as Set
@@ -38,7 +38,7 @@ spec = do
               , "  return x;"
               , "}"
               ]
-        case runParser pComponent "test" compCode of
+        case runAnnotatedParser False pComponent "test" compCode of
           Left err -> expectationFailure $ "Parse failed: " <> show err
           Right annotatedComp -> do
             result <- runInferenceTest $ inferTyEffProgramTEST libraryComponents [annotatedComp]
@@ -59,7 +59,7 @@ spec = do
               , "  return result;"
               , "}"
               ]
-        case runParser pComponent "test" compCode of
+        case runAnnotatedParser False pComponent "test" compCode of
           Left err -> expectationFailure $ "Parse failed: " <> show err
           Right annotatedComp -> do
             result <- runInferenceTest $ inferTyEffProgramTEST libraryComponents [annotatedComp]
@@ -78,7 +78,7 @@ spec = do
               , "  return x;"    -- but expecting string
               , "}"
               ]
-        case runParser pComponent "test" compCode of
+        case runAnnotatedParser False pComponent "test" compCode of
           Left err -> expectationFailure $ "Parse failed: " <> show err
           Right annotatedComp -> do
             result <- runInferenceTest $ inferTyEffProgramTEST libraryComponents [annotatedComp]
@@ -96,7 +96,7 @@ spec = do
               , "  return value;"
               , "}"
               ]
-        case runParser pProgram "test" progCode of
+        case runAnnotatedParser False pProgram "test" progCode of
           Left err -> expectationFailure $ "Parse failed: " <> show err
           Right (_ann :< ProgramF _eventDecls comps) -> do
             result <- runInferenceTest $ inferTyEffProgramTEST libraryComponents comps
@@ -119,7 +119,7 @@ spec = do
               , "  return result;"
               , "}"
               ]
-        case runParser pProgram "test" progCode of
+        case runAnnotatedParser False pProgram "test" progCode of
           Left err -> expectationFailure $ "Parse failed: " <> show err
           Right (_ann :< ProgramF _eventDecls comps) -> do
             result <- runInferenceTest $ inferTyEffProgramTEST libraryComponents comps
@@ -150,7 +150,7 @@ spec = do
                 , "  return activeValue;"
                 , "}"
                 ]
-          case runParser pComponent "test" compCode of
+          case runAnnotatedParser False pComponent "test" compCode of
             Left err -> expectationFailure $ "Parse failed: " <> show err
             Right annotatedComp -> do
               result <- runInferenceTest $ inferTyEffProgramTEST libraryComponents [annotatedComp]
@@ -199,7 +199,7 @@ spec = do
                 , "  return cachedValue;"
                 , "}"
                 ]
-          case runParser pProgram "test" progCode of
+          case runAnnotatedParser False pProgram "test" progCode of
             Left err -> expectationFailure $ "Parse failed: " <> show err
             Right (_ann :< ProgramF _eventDecls comps) -> do
               result <- runInferenceTest $ inferTyEffProgramTEST libraryComponents comps
@@ -222,7 +222,7 @@ spec = do
                 , "  return counter;"
                 , "}"
                 ]
-          case runParser pComponent "test" compCode of
+          case runAnnotatedParser False pComponent "test" compCode of
             Left err -> expectationFailure $ "Parse failed: " <> show err
             Right annotatedComp -> do
               result <- runInferenceTest $ inferTyEffProgramTEST libraryComponents [annotatedComp]
@@ -260,7 +260,7 @@ spec = do
                 , "  return activeValue;"
                 , "}"
                 ]
-          case runParser pComponent "test" compCode of
+          case runAnnotatedParser False pComponent "test" compCode of
             Left err -> expectationFailure $ "Parse failed: " <> show err
             Right annotatedComp -> do
               result <- runInferenceTest $ inferTyEffProgramTEST libraryComponents [annotatedComp]
@@ -343,7 +343,7 @@ spec = do
                 , "  return cachedValue;"
                 , "}"
                 ]
-          case runParser pProgram "test" progCode of
+          case runAnnotatedParser False pProgram "test" progCode of
             Left err -> expectationFailure $ "Parse failed: " <> show err
             Right (_ann :< ProgramF _eventDecls comps) -> do
               result <- runInferenceTest $ inferTyEffProgramTEST libraryComponents comps
@@ -381,7 +381,7 @@ spec = do
                 , "  return slowTimer;"
                 , "}"
                 ]
-          case runParser pProgram "test" progCode of
+          case runAnnotatedParser False pProgram "test" progCode of
             Left err -> expectationFailure $ "Parse failed: " <> show err
             Right (_ann :< ProgramF _eventDecls comps) -> do
               result <- runInferenceTest $ inferTyEffProgramTEST libraryComponents comps
@@ -410,7 +410,7 @@ spec = do
                 , "  return result;"
                 , "}"
                 ]
-          case runParser pComponent "test" compCode of
+          case runAnnotatedParser False pComponent "test" compCode of
             Left err -> expectationFailure $ "Parse failed: " <> show err
             Right annotatedComp -> do
               result <- runInferenceTest $ inferTyEffProgramTEST libraryComponents [annotatedComp]
@@ -440,7 +440,7 @@ spec = do
                 , "  return counter;"
                 , "}"
                 ]
-          case runParser pComponent "test" compCode of
+          case runAnnotatedParser False pComponent "test" compCode of
             Left err -> expectationFailure $ "Parse failed: " <> show err
             Right annotatedComp -> do
               result <- runInferenceTest $ inferTyEffProgramTEST libraryComponents [annotatedComp]

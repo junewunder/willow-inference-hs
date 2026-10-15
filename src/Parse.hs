@@ -2,6 +2,7 @@
 -- | Parser for annotated AST with source position information
 module Parse
   ( AnnotatedParser,
+    runAnnotatedParser,
     pProgram,
     pExpr,
     pJSXElement,
@@ -28,7 +29,13 @@ import Types
 import Util
 
 
-type AnnotatedParser = Parsec Void Text
+-- | The parser reads one setting: whether the unsound type @any@ is accepted
+-- (@--allow-any@, 'optionsAllowAny'). Without it, @any@ is not a type.
+type AnnotatedParser = ParsecT Void Text (ReaderT Bool Identity)
+
+-- | Run a parser, with @any@ accepted or not.
+runAnnotatedParser :: Bool -> AnnotatedParser a -> FilePath -> Text -> Either (ParseErrorBundle Text Void) a
+runAnnotatedParser allowAny p name input = runIdentity (runReaderT (runParserT p name input) allowAny)
 
 -- | Space consumer (now supports nested block comments)
 sc :: AnnotatedParser ()
@@ -368,20 +375,24 @@ pExprAtom = do
     -- Smart arrow function parser
     pArrowFunction :: AnnotatedParser AnnotatedNode
     pArrowFunction = do
+      startPos <- getSourcePos
       params <- try (parens (pArrowParam `sepBy` symbol ",") <* lookAhead (symbol "=>"))
                 <|> try (do
                       x <- pIdentifier <* lookAhead (symbol "=>")
                       return [(x, Nothing)])
       _ <- symbol "=>"
       body <- braces pExpr <|> pExpr
-      case params of
-        [] -> withSourceInfo $ return $ EArrowF [] "_" (Just TAny) body
-        _ -> do
-          let curryArrow [] b = b
-              curryArrow ((param, mSch):ps) b = do
-                rest <- curryArrow ps b
-                withSourceInfo $ return $ EArrowF [] param mSch rest
-          curryArrow params (pure body)
+      endPos <- getSourcePos
+      allowAny <- ask
+      -- Every curried λ spans the whole source λ, so an error about one
+      -- (a missing parameter annotation, say) points at it.
+      let arrow param mTy b =
+            NodeAnnotation (Span startPos endPos) TUnit EffNone :< LangFExpr (EArrowF [] param mTy b)
+      pure $ case params of
+        -- @() => e@ takes unit; under @--allow-any@ it takes any, as it did
+        -- in the versions that flag exists for.
+        [] -> arrow "_" (Just (if allowAny then TAny else TUnit)) body
+        _ -> foldr (\(param, mTy) b -> arrow param mTy b) body params
 
     -- Parse access chain (.0, .1)
     pAccessChain e = do
@@ -530,19 +541,23 @@ pPairType = do
     _ <- symbol "*"
     TPair t1 <$> pPairType
 
--- | Parse a base type (string, int, bool, or a parenthesized type)
+-- | Parse a base type (string, int, bool, or a parenthesized type); @any@
+-- only under @--allow-any@.
 pBaseType :: AnnotatedParser Type
-pBaseType = choice
-  [ TString <$ symbol "string"
-  , TInt <$ symbol "int"
-  , TInt <$ symbol "number"
-  , TBool <$ symbol "bool"
-  , TUnit <$ symbol "unit"
-  , THtml <$ symbol "html"
-  , TAny <$ symbol "any"
-  , pSchema
-  , parens pType
-  ]
+pBaseType = do
+  allowAny <- ask
+  choice $
+    [ TString <$ symbol "string"
+    , TInt <$ symbol "int"
+    , TInt <$ symbol "number"
+    , TBool <$ symbol "bool"
+    , TUnit <$ symbol "unit"
+    , THtml <$ symbol "html"
+    ]
+    <> [TAny <$ symbol "any" | allowAny]
+    <> [ pSchema
+       , parens pType
+       ]
 
 -- | Parse schema, either a polymorphic forall or a monomorphic type
 pSchema :: AnnotatedParser Type

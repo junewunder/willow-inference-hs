@@ -9,7 +9,7 @@
 -- (composition, idempotence, the occurs check) are QuickCheck properties in
 -- "EffectVariableLawsSpec".
 --
--- Also here: the checker's other error-reporting fixes (applying @any@, the
+-- Also here: the checker's other error-reporting fixes (an unannotated λ, the
 -- source span of a declaration, the number of explicit effect arguments).
 module SubstitutionSpec (spec) where
 
@@ -66,17 +66,17 @@ spec = describe "Substitutions (Algorithm W)" $ do
 
     it "an effect built before a later unification is brought under it" $ do
       -- f(1) has effect ?e when it is inferred; needsX(f) binds ?e earlier
-      -- in the same body. Nothing binds it afterwards (the argument is
-      -- null), so no unification variable may survive.
+      -- in the same body. Nothing binds it afterwards (the argument already
+      -- has effect ○¹ʳ @x), so no unification variable may survive.
       (sigma, _) <- inferSource $ withXY
-        [ "  on clk do { ((f: int -> unit | e) => { needsX(f) ;; f(1) })(null) };" ]
+        [ "  on clk do { ((f: int -> unit | e) => { needsX(f) ;; f(1) })(" <> setX <> ") };" ]
       cascadeOf sigma "C" "clk" `shouldBe` after1r (at "x")
 
   -- -----------------------------------------------------------------------
   describe "an annotation's unifier is kept" $ do
 
-    -- A's f is left open by the argument null, so a.g : int → unit | ?e, and
-    -- a.clk's cascade is ?e.
+    -- A's f is left open by the polymorphic argument nn, so
+    -- a.g : int → unit | ?e, and a.clk's cascade is ?e.
     let parent body = Text.unlines $
           [ "comp A<f>(g: int -> unit | f, clk: int) : unit {"
           , "  on clk do { g(1) };"
@@ -87,9 +87,8 @@ spec = describe "Substitutions (Algorithm W)" $ do
 
     it "a let annotation fixes a variable of the context, and Δ sees it" $ do
       (sigma, _) <- inferSource $ parent
-        [ "comp P(clk: int) : unit {"
+        [ "comp P(nn: forall G. int -> unit | G, clk: int) : unit {"
         , "  state x, setX default 0;"
-        , "  let nn = null;"
         , "  comp a = A(nn, clk);"
         , "  let h : int -> unit | after 1r {@x} = a.g;"
         , "  return ();"
@@ -99,10 +98,9 @@ spec = describe "Substitutions (Algorithm W)" $ do
 
     it "a second annotation that contradicts the first is rejected, not resolved in the first's favour" $ do
       result <- inferSourceEither $ parent
-        [ "comp P(clk: int) : unit {"
+        [ "comp P(nn: forall G. int -> unit | G, clk: int) : unit {"
         , "  state x, setX default 0;"
         , "  state y, setY default 0;"
-        , "  let nn = null;"
         , "  comp a = A(nn, clk);"
         , "  let h : int -> unit | after 1r {@x} = a.g;"
         , "  let h2 : int -> unit | after 1r {@y} = a.g;"
@@ -113,8 +111,7 @@ spec = describe "Substitutions (Algorithm W)" $ do
 
     it "a component's return annotation fixes a variable of the context, in Δ and in the typed tree" $ do
       (sigma, typed) <- inferSource $ parent
-        [ "comp P(clk: int) : int -> unit | after 1r {@x} {"
-        , "  let nn = null;"
+        [ "comp P(nn: forall G. int -> unit | G, clk: int) : int -> unit | after 1r {@x} {"
         , "  comp a = A(nn, clk);"
         , "  let rv = a.g;"
         , "  return rv;"
@@ -179,21 +176,43 @@ spec = describe "Substitutions (Algorithm W)" $ do
       r2 `shouldBe` Right (Map.fromList [(Unif 1, at "x")])
 
   -- -----------------------------------------------------------------------
-  describe "applying a value that is not a function" $ do
+  describe "an unannotated λ is typed only against an expected arrow" $ do
 
-    it "an unannotated parameter (type any) is rejected with a message that says so" $ do
-      result <- inferSourceEither $ Text.unlines
+    let needsAnnotation what src = do
+          result <- inferSourceEither src
+          case result of
+            Left err -> do
+              let msg = Text.unpack (errorMessage err)
+              msg `shouldContain` "Cannot infer the type of the parameter"
+              msg `shouldContain` "needs a type annotation"
+            Right _ -> expectationFailure (what <> " was accepted")
+
+    it "an unannotated λ bound by a let is rejected, asking for an annotation" $
+      needsAnnotation "an unannotated λ with no expected type" $ Text.unlines
         [ "comp C(clk: int) : unit {"
         , "  let g = (f) => { f(1) };"
         , "  return ();"
         , "}"
         ]
-      case result of
-        Left err -> do
-          let msg = Text.unpack (errorMessage err)
-          msg `shouldContain` "Cannot apply f"
-          msg `shouldContain` "any"
-        Right _ -> expectationFailure "applying an unannotated parameter was accepted"
+
+    it "an unannotated λ applied directly is rejected" $
+      needsAnnotation "an unannotated λ in function position" $ withXY
+        [ "  on clk do { ((v) => { " <> setX <> "(v) })(1) };" ]
+
+    it "an unannotated λ passed for an arrow parameter takes the parameter's type" $ do
+      (sigma, _) <- inferSource $ withXY
+        [ "  on clk do { needsX((v) => { setX((c: int) => { c + v }) }) };" ]
+      cascadeOf sigma "C" "clk" `shouldBe` after1r (at "x")
+
+    it "a λ with no parameters takes unit" $ do
+      (sigma, _) <- inferSource $ withXY
+        [ "  let tick = () => { setX((c: int) => { c + 1 }) };"
+        , "  on clk do { tick(()) };"
+        ]
+      cascadeOf sigma "C" "clk" `shouldBe` after1r (at "x")
+
+  -- -----------------------------------------------------------------------
+  describe "applying a value that is not a function" $ do
 
     it "an int is rejected with its type in the message" $ do
       result <- inferSourceEither $ Text.unlines
@@ -259,8 +278,7 @@ spec = describe "Substitutions (Algorithm W)" $ do
           , "  on clk do { h(1) ;; k(1) };"
           , "  return ();"
           , "}"
-          , "comp P(clk: int) : unit {"
-          , "  let nn = null;"
+          , "comp P(nn: forall G. int -> unit | G, clk: int) : unit {"
           , "  comp a = A" <> args <> "(nn, nn, clk);"
           , "  return ();"
           , "}"

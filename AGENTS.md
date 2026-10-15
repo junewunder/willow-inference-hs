@@ -22,7 +22,10 @@ stack exec -- willow-hs-exe            # usage + lists the paper examples
 ```
 
 Flags: `-v/--verbose` (dumps the parsed AST), `--first` (initial-render analysis),
-`--cleanup` (stale-listener check).
+`--cleanup` (stale-listener check), `--allow-any` (accepts the unsound type `any`, the
+built-in `null`, and unannotated λ parameters anywhere, for programs written against
+older versions; `optionsAllowAny`, read by the parser, `Builtins.tyLibraryFunctions` and
+the λ rule).
 
 After any change to the language: `stack build`, then `stack test`, then run a
 relevant `examples/*.txt` through the exe and eyeball the printed effect. The tests

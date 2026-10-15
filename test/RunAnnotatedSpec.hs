@@ -3,14 +3,13 @@ module RunAnnotatedSpec (spec) where
 
 import RIO
 import Test.Hspec
-import Text.Megaparsec (runParser)
 import qualified RIO.Set as Set
 import qualified RIO.Map as Map
 import qualified RIO.Text as Text
 import Control.Comonad.Cofree (Cofree(..))
 
 -- Import project modules
-import Parse (pComponent)
+import Parse (pComponent, runAnnotatedParser)
 import InferTyEffect (inferTyEffProgramTEST)
 import InferenceMonad
 import Import
@@ -40,7 +39,7 @@ spec = do
               , "  return result;"
               , "}"
               ]
-        case runParser pComponent "test" compCode of
+        case runAnnotatedParser False pComponent "test" compCode of
           Left err -> expectationFailure $ "Parse failed: " <> show err
           Right comp -> do
             result <- runInferenceTest $ inferTyEffProgramTEST libraryComponents [comp]
@@ -66,7 +65,7 @@ spec = do
               , "  return result;"
               , "}"
               ]
-        case runParser pComponent "test" compCode of
+        case runAnnotatedParser False pComponent "test" compCode of
           Left err -> expectationFailure $ "Parse failed: " <> show err
           Right comp -> do
             result <- runInferenceTest $ inferTyEffProgramTEST libraryComponents [comp]
@@ -86,7 +85,7 @@ spec = do
 
       it "provides meaningful error messages for parse failures" $ do
         let badCode = "comp BadSyntax() : int { invalid syntax here }"
-        case runParser pComponent "test" badCode of
+        case runAnnotatedParser False pComponent "test" badCode of
           Left err -> show err `shouldContain` "FancyError"
           Right _ -> expectationFailure "Should have failed to parse"
 
@@ -98,7 +97,7 @@ spec = do
               , "  return value;"
               , "}"
               ]
-        case runParser pComponent "test" compCode of
+        case runAnnotatedParser False pComponent "test" compCode of
           Left err -> expectationFailure $ "Parse failed: " <> show err
           Right comp -> do
             result <- runInferenceTest $ inferTyEffProgramTEST libraryComponents [comp]
@@ -123,7 +122,7 @@ spec = do
               , "  return counter;"
               , "}"
               ]
-        case runParser pComponent "test" compCode of
+        case runAnnotatedParser False pComponent "test" compCode of
           Left err -> expectationFailure $ "Parse failed: " <> show err
           Right comp -> do
             result <- runInferenceTest $ inferTyEffProgramTEST libraryComponents [comp]
@@ -149,7 +148,7 @@ spec = do
               , "  return num;"  -- int returned where string expected
               , "}"
               ]
-        case runParser pComponent "test" compCode of
+        case runAnnotatedParser False pComponent "test" compCode of
           Left err -> expectationFailure $ "Parse failed: " <> show err
           Right comp -> do
             result <- runInferenceTest $ inferTyEffProgramTEST libraryComponents [comp]
@@ -159,7 +158,7 @@ spec = do
 
       it "provides source location information in errors" $ do
         let badCode = "comp InvalidComponent() : int { let x = ; return x; }"
-        case runParser pComponent "test" badCode of
+        case runAnnotatedParser False pComponent "test" badCode of
           Left err -> show err `shouldContain` "TrivialError"
           Right _ -> expectationFailure "Should have failed to parse"
 
@@ -171,7 +170,7 @@ spec = do
               , "  return result;"
               , "}"
               ]
-        case runParser pComponent "test" compCode of
+        case runAnnotatedParser False pComponent "test" compCode of
           Left err -> expectationFailure $ "Parse failed: " <> show err
           Right comp -> do
             result <- runInferenceTest $ inferTyEffProgramTEST libraryComponents [comp]
@@ -197,7 +196,7 @@ spec = do
               , "  return result;"
               , "}"
               ]
-        case runParser pComponent "test" compCode of
+        case runAnnotatedParser False pComponent "test" compCode of
           Left err -> expectationFailure $ "Parse failed: " <> show err
           Right comp -> do
             result <- runInferenceTest $ inferTyEffProgramTEST libraryComponents [comp]

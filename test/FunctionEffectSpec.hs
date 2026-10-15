@@ -2,14 +2,13 @@ module FunctionEffectSpec (spec) where
 
 import RIO
 import Test.Hspec
-import Text.Megaparsec (runParser)
 import qualified RIO.Set as Set
 import qualified RIO.Map as Map
 import qualified RIO.Text as Text
 import Control.Comonad.Cofree (Cofree(..))
 
 -- Import project modules
-import Parse (pComponent)
+import Parse (pComponent, runAnnotatedParser)
 import InferTyEffect (inferTyEffProgramTEST)
 import InferenceMonad
 import Import
@@ -38,7 +37,7 @@ spec = describe "FunctionEffect" $ do
               , "  return result;"
               , "}"
               ]
-        case runParser pComponent "test" compCode of
+        case runAnnotatedParser False pComponent "test" compCode of
           Left err -> expectationFailure $ "Parse failed: " <> show err
           Right comp -> do
             result <- runInferenceTest $ inferTyEffProgramTEST libraryComponents [comp]
@@ -62,7 +61,7 @@ spec = describe "FunctionEffect" $ do
               , "  return result;"
               , "}"
               ]
-        case runParser pComponent "test" compCode of
+        case runAnnotatedParser False pComponent "test" compCode of
           Left err -> expectationFailure $ "Parse failed: " <> show err
           Right comp -> do
             result <- runInferenceTest $ inferTyEffProgramTEST libraryComponents [comp]
@@ -89,7 +88,7 @@ spec = describe "FunctionEffect" $ do
               , "  return count1;"
               , "}"
               ]
-        case runParser pComponent "test" compCode of
+        case runAnnotatedParser False pComponent "test" compCode of
           Left err -> expectationFailure $ "Parse failed: " <> show err
           Right comp -> do
             result <- runInferenceTest $ inferTyEffProgramTEST libraryComponents [comp]

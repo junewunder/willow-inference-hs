@@ -350,10 +350,19 @@ the same concrete syntax Willow parses, so it can be pasted back into a program.
 | `-v` / `--verbose` | verbose logging; dumps the parsed AST |
 | `--first` | additionally show the initial-render (mount) analysis |
 | `--cleanup` | additionally check that every event handler is removed again |
+| `--allow-any` | accept the type `any`, the built-in `null`, and unannotated λ parameters anywhere — **unsound** |
 
 The two analyses are the paper's post-typecheck analyses (§5.4). Both are additive:
 they append a section after the normal output rather than replacing it, and they can be
 combined in one run.
+
+`--allow-any` is **unsound** and is not part of the system the paper describes. It exists
+only for running programs written against older versions of Willow, which had a type
+`any` that unifies with every type and binds nothing. With the flag, `any` is a type,
+`null : any` is a built-in, `fetch` and `fetchData` hand their callbacks an `any`, and a
+λ parameter with no annotation (including the one in `() => e`) gets type `any` wherever
+it is not checked against an expected function type. A program that checks under the
+flag carries no guarantee: `any` lets one value be used as an `int` and as a `string`.
 
 ### `--first`: what a component does when it mounts
 
@@ -565,11 +574,14 @@ where one the component does not bind stands for whatever effect it meets, as in
 across all the annotations of its declaration), every `let` is generalised over the
 variables its context does not own, an annotated `let` must be an instance of what its
 definition infers, and each component instance gets fresh variables for its effect
-parameters. Unification is Algorithm W's: one substitution is threaded through a whole
-component, composed at each step and applied to the context, and a variable is never
-bound to an effect it occurs in. The paper gives the
-grammar (Fig. 5) and the full set of typing rules (Figs. 6–7, and Figs. 10–15 in the
-appendix).
+parameters. A λ's parameter needs a type annotation unless the λ is passed directly
+where a function type is expected (as the argument of a function, or as a `bind` or
+`once` handler), in which case it takes that type; `() => e` takes `unit`. Anywhere
+else an unannotated parameter is an error asking for the annotation (unless you pass
+the unsound `--allow-any`, above). Unification is Algorithm W's: one substitution is
+threaded through a whole component, composed at each step and applied to the context,
+and a variable is never bound to an effect it occurs in. The paper gives the grammar
+(Fig. 5) and the full set of typing rules (Figs. 6–7, and Figs. 10–15 in the appendix).
 
 ## License
 
